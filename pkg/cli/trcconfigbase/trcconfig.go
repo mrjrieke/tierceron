@@ -207,6 +207,7 @@ func CommonMain(envPtr *string,
 			StartDir:   append([]string{}, *startDirPtr),
 			EndDir:     *endDirPtr,
 		}
+		driverConfig = driverConfigBase
 
 		appRoleConfigPtr = new(string)
 		eUtils.CheckError(&driverConfigBase.CoreConfig, err, true)
