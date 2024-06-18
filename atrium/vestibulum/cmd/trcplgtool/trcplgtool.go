@@ -47,6 +47,7 @@ func main() {
 
 	err := plgtbase.CommonMain(envPtr, addrPtr, tokenPtr, nil, secretIDPtr, appRoleIDPtr, tokenNamePtr, regionPtr, flagset, os.Args, nil)
 	if err != nil {
+		fmt.Printf("Certification action failure: %v\n", err)
 		os.Exit(1)
 	}
 

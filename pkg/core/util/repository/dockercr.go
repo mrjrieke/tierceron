@@ -1,13 +1,10 @@
-//go:build dockercr
-// +build dockercr
-
 package repository
 
 import (
 	"context"
-	"errors"
 
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
 	eUtils "github.com/trimble-oss/tierceron/pkg/utils"
@@ -41,13 +38,13 @@ func GetImageAndShaFromDownload(driverConfig *eUtils.DriverConfig, pluginToolCon
 	// dockerAuth.IdentityToken = token.IdentityToken
 	auth, err := registry.EncodeAuthConfig(dockerAuth)
 
-	opts := &types.ImagePullOptions{
-		RegistryAuth: auth,
-	}
-
 	images, err := cli.ImageList(context.Background(), types.ImageListOptions{})
 	if err != nil {
 		return err
+	}
+
+	opts := &image.PullOptions{
+		RegistryAuth: auth,
 	}
 
 	for _, image := range images {
@@ -61,5 +58,22 @@ func GetImageAndShaFromDownload(driverConfig *eUtils.DriverConfig, pluginToolCon
 
 // Pushes image to docker registry from: "rawImageFile", and "pluginname" in the map pluginToolConfig.
 func PushImage(driverConfig *eUtils.DriverConfig, pluginToolConfig map[string]interface{}) error {
-	return errors.New("Not defined")
+
+	dockerAuth := registry.AuthConfig{
+		Username: pluginToolConfig["dockerUser"].(string),
+		Password: pluginToolConfig["dockerPassword"].(string),
+	}
+
+	cli, err := client.NewClientWithOpts(client.WithHost(pluginToolConfig["dockerRepository"].(string)))
+	if err != nil {
+		panic(err)
+	}
+	auth, err := registry.EncodeAuthConfig(dockerAuth)
+	opts := &image.PushOptions{
+		RegistryAuth: auth,
+	}
+	imgCloser, pushErr := cli.ImagePush(context.Background(), pluginToolConfig["pluginName"].(string), *opts)
+	defer imgCloser.Close()
+
+	return pushErr
 }

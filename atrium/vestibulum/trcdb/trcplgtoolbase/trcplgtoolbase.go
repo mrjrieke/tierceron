@@ -480,7 +480,6 @@ func CommonMain(envPtr *string,
 
 		_, err = mod.Write(pluginToolConfig["pluginpath"].(string), writeMap, trcshDriverConfigBase.DriverConfig.CoreConfig.Log)
 		if err != nil {
-			fmt.Println(err)
 			return err
 		}
 		fmt.Println("Deployment definition applied to vault and is ready for deployments.")
@@ -490,7 +489,6 @@ func CommonMain(envPtr *string,
 		err := cmd.Run()
 		if err != nil && strings.Contains(err.Error(), "2185") {
 			// Only break if service isn't defined...
-			fmt.Println(err)
 			return err
 		}
 		cmdKill := exec.Command("taskkill", "/F", "/T", "/FI", fmt.Sprintf("\"SERVICES eq %s\"", pluginToolConfig["trcservicename"].(string)))
@@ -504,7 +502,6 @@ func CommonMain(envPtr *string,
 		err := cmd.Run()
 		if err != nil && strings.Contains(err.Error(), "2185") {
 			// Only break if service isn't defined...
-			fmt.Println(err)
 			return err
 		}
 		fmt.Printf("Service started: %s\n", pluginToolConfig["trcservicename"].(string))
@@ -715,10 +712,7 @@ func CommonMain(envPtr *string,
 		}
 	} else if *pushimagePtr {
 		fmt.Println("Pushing image to registry.")
-		err := repository.PushImage(&trcshDriverConfigBase.DriverConfig, pluginToolConfig)
-		if err != nil {
-			fmt.Println(err.Error())
-		}
+		return repository.PushImage(&trcshDriverConfigBase.DriverConfig, pluginToolConfig)
 	}
 
 	//Checks if image has been copied & deployed

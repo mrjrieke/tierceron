@@ -19,9 +19,9 @@ import (
 	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/trimble-oss/tierceron-hat/cap"
 	captiplib "github.com/trimble-oss/tierceron-hat/captip/captiplib"
-	trcshMemFs "github.com/trimble-oss/tierceron/atrium/vestibulum/trcsh"
 	"github.com/trimble-oss/tierceron/atrium/vestibulum/trcdb/opts/prod"
 	"github.com/trimble-oss/tierceron/atrium/vestibulum/trcdb/trcplgtoolbase"
+	trcshMemFs "github.com/trimble-oss/tierceron/atrium/vestibulum/trcsh"
 	"github.com/trimble-oss/tierceron/atrium/vestibulum/trcsh/deployutil"
 	kube "github.com/trimble-oss/tierceron/atrium/vestibulum/trcsh/kube/native"
 	"github.com/trimble-oss/tierceron/atrium/vestibulum/trcsh/trcshauth"
@@ -105,11 +105,11 @@ func TrcshInitConfig(env string, region string, pathParam string, outputMemCache
 			EnvRaw:            env,
 			IsShellSubProcess: false,
 			OutputMemCache:    outputMemCache,
-			MemFs:             &trcshMemFs.TrcshMemFs{
-				BillyFs: 	   memfs.New(),
+			MemFs: &trcshMemFs.TrcshMemFs{
+				BillyFs: memfs.New(),
 			},
-			Regions:           regions,
-			PathParam:         pathParam, // Make available to trcplgtool
+			Regions:   regions,
+			PathParam: pathParam, // Make available to trcplgtool
 		},
 	}
 	return trcshDriverConfig, nil
@@ -565,6 +565,7 @@ func processPluginCmds(trcKubeDeploymentConfig **kube.TrcKubeConfig,
 	case "trcconfig":
 		err := roleBasedRunner(env, region, trcshDriverConfig, control, isAgentToken, token, argsOrig, deployArgLines, configCount)
 		if err != nil {
+			fmt.Printf("Certification action failure: %v\n", err)
 			os.Exit(1)
 		}
 	case "trcplgtool":
@@ -640,6 +641,7 @@ func processPluginCmds(trcKubeDeploymentConfig **kube.TrcKubeConfig,
 
 		err := roleBasedRunner(env, region, trcshDriverConfig, control, isAgentToken, *gTrcshConfig.CToken, argsOrig, deployArgLines, configCount)
 		if err != nil {
+			fmt.Printf("trcsh failure: %v\n", err)
 			os.Exit(1)
 		}
 
@@ -711,10 +713,10 @@ func processWindowsCmds(trcKubeDeploymentConfig *kube.TrcKubeConfig,
 //
 //	Nothing.
 func ProcessDeploy(featherCtx *cap.FeatherContext, trcshDriverConfig *capauth.TrcshDriverConfig, token string, deployment string, trcPath string, secretId *string, approleId *string, outputMemCache bool) {
-	
+
 	// Verify Billy implementation
 	configMemFs := trcshDriverConfig.DriverConfig.MemFs.(*trcshMemFs.TrcshMemFs)
-	
+
 	isAgentToken := false
 	if token != "" {
 		isAgentToken = true
