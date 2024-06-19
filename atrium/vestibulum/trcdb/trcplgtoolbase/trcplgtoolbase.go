@@ -82,7 +82,9 @@ func CommonMain(envPtr *string,
 	pluginTypePtr := flagset.String("pluginType", "vault", "Used to indicate type of plugin.  Default is vault.")
 
 	// Certify flags...
-	sha256Ptr := flagset.String("sha256", "", "Used to certify vault plugin") //This has to match the image that is pulled -> then we write the vault.
+	sha256Ptr := flagset.String("sha256", "", "Used to certify vault plugin")          //This has to match the image that is pulled -> then we write the vault.
+	dockerfilePtr := flagset.String("dockerfile", "", "Used to create a docker image") //This has to match the image that is pulled -> then we write the vault.
+
 	checkDeployedPtr := flagset.Bool("checkDeployed", false, "Used to check if plugin has been copied, deployed, & certified")
 	checkCopiedPtr := flagset.Bool("checkCopied", false, "Used to check if plugin has been copied & certified")
 
@@ -350,7 +352,7 @@ func CommonMain(envPtr *string,
 		logger.Printf("Certify begin activities\n")
 	}
 
-	if len(*sha256Ptr) > 0 {
+	if !*pushimagePtr && len(*sha256Ptr) > 0 {
 		fileInfo, statErr := os.Stat(*sha256Ptr)
 		if statErr == nil {
 			if fileInfo.Mode().IsRegular() {
@@ -385,6 +387,9 @@ func CommonMain(envPtr *string,
 
 	if !*codebundledeployPtr && len(*sha256Ptr) > 0 {
 		pluginToolConfig["trcsha256"] = *sha256Ptr
+	}
+	if len(*dockerfilePtr) > 0 {
+		pluginToolConfig["dockerfile"] = *dockerfilePtr
 	}
 	pluginToolConfig["pluginNamePtr"] = *pluginNamePtr
 	pluginToolConfig["serviceNamePtr"] = *serviceNamePtr

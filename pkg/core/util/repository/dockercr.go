@@ -1,7 +1,10 @@
 package repository
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"os"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/image"
@@ -59,20 +62,52 @@ func GetImageAndShaFromDownload(driverConfig *eUtils.DriverConfig, pluginToolCon
 // Pushes image to docker registry from: "rawImageFile", and "pluginname" in the map pluginToolConfig.
 func PushImage(driverConfig *eUtils.DriverConfig, pluginToolConfig map[string]interface{}) error {
 
-	dockerAuth := registry.AuthConfig{
-		Username: pluginToolConfig["dockerUser"].(string),
-		Password: pluginToolConfig["dockerPassword"].(string),
-	}
-
 	cli, err := client.NewClientWithOpts(client.WithHost(pluginToolConfig["dockerRepository"].(string)))
 	if err != nil {
 		panic(err)
 	}
+
+	//
+	// 1. Build a local image in docker.
+	//
+	sha256File := pluginToolConfig["trcsha256"].(string)
+
+	file, fileOpenErr := os.Open(sha256File)
+	if fileOpenErr != nil {
+		fmt.Println(fileOpenErr.Error())
+		return fileOpenErr
+	}
+
+	// Close the file when we're done.
+	defer file.Close()
+
+	// Create a reader to the file.
+	reader := bufio.NewReader(file)
+	imageTag := fmt.Sprintf("%s:latest", pluginToolConfig["pluginName"].(string))
+
+	dockerAuth := registry.AuthConfig{
+		Username:      pluginToolConfig["dockerUser"].(string),
+		Password:      pluginToolConfig["dockerPassword"].(string),
+		ServerAddress: pluginToolConfig["dockerRepository"].(string),
+	}
+
+	cli.ImageBuild(context.Background(), reader, types.ImageBuildOptions{
+		Context:     reader,
+		AuthConfigs: map[string]registry.AuthConfig{"config": dockerAuth},
+		Dockerfile:  pluginToolConfig["dockerfile"].(string),
+		Tags:        []string{imageTag},
+	})
+
 	auth, err := registry.EncodeAuthConfig(dockerAuth)
 	opts := &image.PushOptions{
 		RegistryAuth: auth,
 	}
-	imgCloser, pushErr := cli.ImagePush(context.Background(), pluginToolConfig["pluginName"].(string), *opts)
+
+	//
+	// 2. Push local image to remote repository indicated by (Maybe not needed since I
+	//    build directly on the server?)
+	//
+	imgCloser, pushErr := cli.ImagePush(context.Background(), imageTag, *opts)
 	defer imgCloser.Close()
 
 	return pushErr
