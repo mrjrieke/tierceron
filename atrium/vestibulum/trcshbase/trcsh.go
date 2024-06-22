@@ -289,7 +289,9 @@ func CommonMain(envPtr *string, addrPtr *string, envCtxPtr *string,
 		//Open deploy script and parse it.
 		ProcessDeploy(nil, config, "", "", *trcPathPtr, secretIDPtr, appRoleIDPtr, true)
 	} else {
-		deploymentsShard := os.Getenv("DEPLOYMENTS")
+		//Replace dev-1 with DEPLOYMENTS-1
+		deploymentsKey := strings.Replace(*envPtr, c.EnvRaw, "DEPLOYMENTS", 1)
+		deploymentsShard := os.Getenv(deploymentsKey)
 		agentToken := os.Getenv("AGENT_TOKEN")
 		agentEnv := os.Getenv("AGENT_ENV")
 		address := os.Getenv("VAULT_ADDR")
