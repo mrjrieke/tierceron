@@ -1,3 +1,6 @@
+//go:build dockercr
+// +build dockercr
+
 package repository
 
 import (
