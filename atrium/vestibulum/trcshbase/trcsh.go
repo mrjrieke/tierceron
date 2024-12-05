@@ -84,7 +84,7 @@ func CreateLogFile() (*log.Logger, error) {
 	return logger, nil
 }
 
-func TrcshInitConfig(driverConfigPtr *config.DriverConfig, env string, region string, pathParam string, outputMemCache bool, logger ...*log.Logger) (*capauth.TrcshDriverConfig, error) {
+func TrcshInitConfig(driverConfigPtr *config.DriverConfig, env string, region string, pathParam string, useMemCache bool, logger ...*log.Logger) (*capauth.TrcshDriverConfig, error) {
 	if len(env) == 0 {
 		env = os.Getenv("TRC_ENV")
 	}
@@ -145,7 +145,9 @@ func TrcshInitConfig(driverConfigPtr *config.DriverConfig, env string, region st
 				Log:           providedLogger,
 			},
 			IsShellSubProcess: false,
-			OutputMemCache:    outputMemCache,
+			ReadMemCache:      useMemCache,
+			SubOutputMemCache: useMemCache,
+			OutputMemCache:    true,
 			MemFs: &trcshMemFs.TrcshMemFs{
 				BillyFs: memfs.New(),
 			},
@@ -247,11 +249,11 @@ func EnableDeployer(driverConfigPtr *config.DriverConfig, env string, region str
 
 	go captiplib.FeatherCtlEmitter(trcshDriverConfig.FeatherCtx, trcshDriverConfig.DriverConfig.DeploymentCtlMessageChan, deployerEmote, nil)
 	var projServ = ""
-	if len(projectService) > 0 && kernelopts.BuildOptions.IsKernel() {
+	if len(projectService) > 0 && projectService[0] != nil && kernelopts.BuildOptions.IsKernel() {
 		projServ = *projectService[0]
 	}
 
-	go ProcessDeploy(trcshDriverConfig.FeatherCtx, trcshDriverConfig, deployment, trcPath, projServ, secretId, approleId, false, dronePtr)
+	go ProcessDeploy(trcshDriverConfig.FeatherCtx, trcshDriverConfig, deployment, trcPath, projServ, secretId, approleId, dronePtr)
 }
 
 // This is a controller program that can act as any command line utility.
@@ -344,7 +346,7 @@ func CommonMain(envPtr *string, addrPtr *string, envCtxPtr *string,
 		}
 
 		//Open deploy script and parse it.
-		ProcessDeploy(nil, trcshDriverConfig, "", *trcPathPtr, *projectServicePtr, secretIDPtr, appRoleIDPtr, true, dronePtr)
+		ProcessDeploy(nil, trcshDriverConfig, "", *trcPathPtr, *projectServicePtr, secretIDPtr, appRoleIDPtr, dronePtr)
 	} else {
 		if driverConfigPtr != nil && driverConfigPtr.CoreConfig.Log == nil {
 			logger, err := CreateLogFile()
@@ -506,7 +508,8 @@ func CommonMain(envPtr *string, addrPtr *string, envCtxPtr *string,
 			driverConfigPtr.CoreConfig.Log.Printf("drone trcsh requires supported VAULT_ADDR address: %s\n", err.Error())
 			os.Exit(124)
 		}
-
+		var kernelId int
+		var kernelName string = "trcshk"
 		if kernelopts.BuildOptions.IsKernel() {
 			hostname := os.Getenv("HOSTNAME")
 			id := 0
@@ -531,7 +534,7 @@ func CommonMain(envPtr *string, addrPtr *string, envCtxPtr *string,
 					hostname = string(hostOutput)
 				}
 			}
-			if matches, _ := regexp.MatchString("trcshk\\-\\d+$", hostname); matches {
+			if matches, _ := regexp.MatchString("\\-\\d+$", hostname); matches {
 				driverConfigPtr.CoreConfig.Log.Println("Stateful set enabled")
 
 				// spectrum-aggregator-snapshot-<pool>
@@ -541,6 +544,8 @@ func CommonMain(envPtr *string, addrPtr *string, envCtxPtr *string,
 				if err != nil {
 					id = 0
 				}
+				kernelId = id
+				kernelName = hostParts[0]
 				driverConfigPtr.CoreConfig.Log.Printf("Starting Stateful trcshk with set entry id: %d\n", id)
 			} else {
 				driverConfigPtr.CoreConfig.Log.Printf("Unable to match: %s\n", hostname)
@@ -562,7 +567,12 @@ func CommonMain(envPtr *string, addrPtr *string, envCtxPtr *string,
 		fmt.Printf("drone trcsh beginning new agent configuration sequence.\n")
 		driverConfigPtr.CoreConfig.Log.Printf("drone trcsh beginning new agent configuration sequence.\n")
 		// Preload agent synchronization configs...
-		trcshDriverConfig, err := TrcshInitConfig(driverConfigPtr, agentEnv, *regionPtr, "", true, driverConfigPtr.CoreConfig.Log)
+		trcshDriverConfig, err := TrcshInitConfig(driverConfigPtr,
+			agentEnv,
+			*regionPtr,
+			"",
+			kernelopts.BuildOptions.IsKernel(),
+			driverConfigPtr.CoreConfig.Log)
 		if err != nil {
 			fmt.Printf("drone trcsh agent bootstrap init config failure: %s\n", err.Error())
 			driverConfigPtr.CoreConfig.Log.Printf("drone trcsh agent bootstrap init config failure: %s\n", err.Error())
@@ -687,7 +697,7 @@ func CommonMain(envPtr *string, addrPtr *string, envCtxPtr *string,
 		}
 
 		if kernelopts.BuildOptions.IsKernel() && kernelPluginHandler == nil {
-			kernelPluginHandler = hive.InitKernel()
+			kernelPluginHandler = hive.InitKernel(fmt.Sprintf("%s-%d", kernelName, kernelId))
 			go kernelPluginHandler.DynamicReloader(trcshDriverConfig.DriverConfig)
 		}
 
@@ -736,7 +746,7 @@ func CommonMain(envPtr *string, addrPtr *string, envCtxPtr *string,
 		}
 
 		for _, deployment := range deployments {
-			EnableDeployer(driverConfigPtr, *gAgentConfig.Env, *regionPtr, deployment, *trcPathPtr, secretIDPtr, appRoleIDPtr, false, deployment, dronePtr, projectServicePtr)
+			EnableDeployer(driverConfigPtr, *gAgentConfig.Env, *regionPtr, deployment, *trcPathPtr, secretIDPtr, appRoleIDPtr, kernelopts.BuildOptions.IsKernel(), deployment, dronePtr, projectServicePtr)
 		}
 
 		<-shutdown
@@ -963,10 +973,6 @@ func processPluginCmds(trcKubeDeploymentConfig **kube.TrcKubeConfig,
 		}
 	case "trcplgtool":
 		// Utilize elevated CToken to perform certifications if asked.
-		if prod.IsProd() {
-			fmt.Printf("trcplgtool unsupported in production\n")
-			os.Exit(125) // Running functionality not supported in prod.
-		}
 		trcshDriverConfig.FeatherCtlCb = featherCtlCb
 		if gAgentConfig == nil {
 
@@ -1112,7 +1118,6 @@ func ProcessDeploy(featherCtx *cap.FeatherContext,
 	projectServicePtr string,
 	secretId *string,
 	approleId *string,
-	outputMemCache bool,
 	dronePtr *bool) {
 	// Verify Billy implementation
 	configMemFs := trcshDriverConfig.DriverConfig.MemFs.(*trcshMemFs.TrcshMemFs)
@@ -1324,6 +1329,7 @@ func ProcessDeploy(featherCtx *cap.FeatherContext,
 			io.Copy(buf, memFile) // Error handling elided for brevity.
 			content = buf.Bytes()
 			configMemFs.BillyFs.Remove(trcPath)
+			configMemFs.ClearCache(trcshDriverConfig.DriverConfig, "/trc_templates")
 		} else {
 			if strings.HasPrefix(trcPath, "./") {
 				trcPath = strings.TrimLeft(trcPath, "./")
@@ -1334,6 +1340,7 @@ func ProcessDeploy(featherCtx *cap.FeatherContext,
 				io.Copy(buf, memFile) // Error handling elided for brevity.
 				content = buf.Bytes()
 				configMemFs.BillyFs.Remove(trcPath)
+				configMemFs.ClearCache(trcshDriverConfig.DriverConfig, "/trc_templates")
 			} else {
 				if strings.HasPrefix(trcPath, "./") {
 					trcPath = strings.TrimLeft(trcPath, "./")
@@ -1342,6 +1349,11 @@ func ProcessDeploy(featherCtx *cap.FeatherContext,
 				// TODO: Move this out into its own function
 				fmt.Println("Trcsh - Error could not find " + trcPath + " for deployment instructions..")
 			}
+		}
+
+		if !kernelopts.BuildOptions.IsKernel() {
+			// Ensure trcconfig pulls templates from file system for builds and releases.
+			trcshDriverConfig.DriverConfig.ReadMemCache = false
 		}
 
 		if trcshDriverConfig.DriverConfig.CoreConfig.EnvBasis == "itdev" || trcshDriverConfig.DriverConfig.CoreConfig.EnvBasis == "staging" || trcshDriverConfig.DriverConfig.CoreConfig.EnvBasis == "prod" {
