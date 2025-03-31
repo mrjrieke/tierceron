@@ -33,7 +33,7 @@ func GetTrusts() map[string][]string {
 }
 
 func GetCursorConfigPath() string {
-	return ""
+	return "super-secrets/Index/TrcVault/trcplugin/customcurso/Certify"
 }
 
 func GetCursorFields() map[string]CursorFieldAttributes {
