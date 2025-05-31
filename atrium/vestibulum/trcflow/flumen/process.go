@@ -17,6 +17,7 @@ import (
 	trcdb "github.com/trimble-oss/tierceron/atrium/trcdb"
 	"github.com/trimble-oss/tierceron/atrium/vestibulum/pluginutil"
 	"github.com/trimble-oss/tierceron/atrium/vestibulum/pluginutil/certify"
+	"github.com/trimble-oss/tierceron/atrium/vestibulum/trcflow/flows"
 	"github.com/trimble-oss/tierceron/buildopts"
 	"github.com/trimble-oss/tierceron/buildopts/harbingeropts"
 	trcvutils "github.com/trimble-oss/tierceron/pkg/core/util"
@@ -376,6 +377,9 @@ func BootFlowMachine(flowMachineInitContext *flowcore.FlowMachineInitContext, dr
 	flowMapLock := &sync.Mutex{}
 	for _, table := range flowMachineInitContext.GetTableFlows() {
 		flowWG.Add(1)
+		if table.FlowName == "TierceronFlow" {
+			continue
+		}
 		go func(tableFlow flowcore.FlowNameType, dc *config.DriverConfig) {
 			eUtils.LogInfo(dc.CoreConfig, "Beginning data source flow: "+tableFlow.ServiceName())
 			defer flowWG.Done()
@@ -405,7 +409,15 @@ func BootFlowMachine(flowMachineInitContext *flowcore.FlowMachineInitContext, dr
 
 			tfmContext.ProcessFlow(
 				&tfContext,
-				flowMachineInitContext.FlowController,
+				func(tfmContext flowcore.FlowMachineContext, tfContext flowcore.FlowContext) error {
+					trcFlowContext := tfContext.(*trcflowcore.TrcFlowContext)
+					switch trcFlowContext.Flow {
+					case trcflowcore.DataFlowStatConfigurationsFlow:
+						return flows.ProcessDataFlowStatConfigurations(tfmContext, tfContext)
+					default:
+						return flowMachineInitContext.FlowController(tfmContext, tfContext)
+					}
+				},
 				vaultDatabaseConfig,
 				sourceDatabaseConnectionsMap,
 				tableFlow,
