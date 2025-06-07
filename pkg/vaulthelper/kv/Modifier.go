@@ -19,8 +19,13 @@ import (
 	"github.com/trimble-oss/tierceron/buildopts"
 	"github.com/trimble-oss/tierceron/buildopts/memonly"
 	"github.com/trimble-oss/tierceron/buildopts/memprotectopts"
+	"github.com/trimble-oss/tierceron/pkg/core"
 
 	"github.com/hashicorp/vault/api"
+)
+
+var (
+	EMPTY_STRING string = ""
 )
 
 // Set all paths that don't use environments to true
@@ -42,7 +47,7 @@ type Modifier struct {
 	SecretDictionary *api.Secret  // Current Secret Dictionary Cache -- populated by mod.List("templates"
 
 	Env             string // Environment (local/dev/QA; Initialized to secrets)
-	RawEnv          string
+	EnvBasis        string
 	Regions         []string // Supported regions
 	Version         string   // Version for data
 	VersionFilter   []string // Used to filter vault paths
@@ -85,8 +90,24 @@ func PreCheckEnvironment(environment string) (string, string, bool, error) {
 	return environment, "", false, nil
 }
 
+// NewModifierFromCoreConfig Constructs a new modifier struct and connects to the vault
+// @param coreConfig 	core config containing components necessary to connect to vault.
+// @param useCache Whether to use the modcache or not.
+// @return 			A pointer to the newly contstructed modifier object (Note: path set to default),
+//
+//	Any errors generated in creating the client
+func NewModifierFromCoreConfig(coreConfig *core.CoreConfig, tokenName string, env string, useCache bool) (*Modifier, error) {
+	return NewModifier(coreConfig.Insecure,
+		coreConfig.TokenCache.GetToken(tokenName),
+		coreConfig.TokenCache.VaultAddressPtr,
+		env,
+		coreConfig.Regions,
+		useCache,
+		coreConfig.Log)
+}
+
 // NewModifier Constructs a new modifier struct and connects to the vault
-// @param token 	The access token needed to connect to the vault
+// @param tokenPtr 	The access token needed to connect to the vault
 // @param address	The address of the API endpoint for the server
 // @param env   	The environment currently connecting to.
 // @param regions   Regions we want
@@ -94,13 +115,18 @@ func PreCheckEnvironment(environment string) (string, string, bool, error) {
 // @return 			A pointer to the newly contstructed modifier object (Note: path set to default),
 //
 //	Any errors generated in creating the client
-func NewModifier(insecure bool, token string, address string, env string, regions []string, useCache bool, logger *log.Logger) (*Modifier, error) {
+func NewModifier(insecure bool, tokenPtr *string, addressPtr *string, env string, regions []string, useCache bool, logger *log.Logger) (*Modifier, error) {
+	if addressPtr == nil || len(*addressPtr) == 0 {
+		addressPtr = new(string)
+		*addressPtr = "http://127.0.0.1:8020" // Default address
+	}
+
 	if useCache {
-		PruneCache(env, address, 10)
-		checkoutModifier, err := cachedModifierHelper(env, address)
+		PruneCache(env, *addressPtr, 10)
+		checkoutModifier, err := cachedModifierHelper(env, *addressPtr)
 		if err == nil && checkoutModifier != nil {
 			checkoutModifier.Insecure = insecure
-			checkoutModifier.RawEnv = env
+			checkoutModifier.EnvBasis = env
 			checkoutModifier.Regions = regions
 			checkoutModifier.Version = ""               // Version for data
 			checkoutModifier.VersionFilter = []string{} // Used to filter vault paths
@@ -111,21 +137,20 @@ func NewModifier(insecure bool, token string, address string, env string, region
 			checkoutModifier.SubSectionName = ""        // The name of the actual subsection.
 			checkoutModifier.SubSectionValue = ""       // The actual value for the sub section.
 			checkoutModifier.SectionPath = ""           // The path to the Index (both seed and vault)
-
+			if tokenPtr != nil {
+				checkoutModifier.client.SetToken(*tokenPtr)
+			}
 			return checkoutModifier, nil
 		}
 	}
 
-	if len(address) == 0 {
-		address = "http://127.0.0.1:8020" // Default address
-	}
-	httpClient, err := CreateHTTPClient(insecure, address, env, false)
+	httpClient, err := CreateHTTPClient(insecure, *addressPtr, env, false)
 	if err != nil {
 		return nil, err
 	}
 	// Create client
 	modClient, err := api.NewClient(&api.Config{
-		Address:    address,
+		Address:    *addressPtr,
 		HttpClient: httpClient,
 	})
 	if err != nil {
@@ -135,11 +160,17 @@ func NewModifier(insecure bool, token string, address string, env string, region
 		return nil, err
 	}
 
+	if (tokenPtr == nil || len(*tokenPtr) == 0) && !useCache {
+		return nil, errors.New("invalid token for modifier")
+	}
+
 	// Set access token and path for this modifier
-	modClient.SetToken(token)
+	if tokenPtr != nil {
+		modClient.SetToken(*tokenPtr)
+	}
 
 	// Return the modifier
-	newModifier := &Modifier{httpClient: httpClient, client: modClient, logical: modClient.Logical(), Env: "secret", RawEnv: env, Regions: regions, Version: "", Insecure: insecure}
+	newModifier := &Modifier{httpClient: httpClient, client: modClient, logical: modClient.Logical(), Env: "secret", EnvBasis: env, Regions: regions, Version: "", Insecure: insecure}
 	return newModifier, nil
 }
 
@@ -172,10 +203,11 @@ func (m *Modifier) Release() {
 		m.httpClient.CloseIdleConnections()
 		return
 	}
+	m.client.SetToken("")
 	if _, ok := modifierCache[m.Env]; ok {
 		m.releaseHelper(m.Env)
 	} else {
-		m.releaseHelper(m.RawEnv)
+		m.releaseHelper(m.EnvBasis)
 	}
 }
 
@@ -213,6 +245,27 @@ func cleanCacheHelper(env string, addr string, limit uint64) {
 	modifierCachLock.Unlock()
 }
 
+func (m *Modifier) EmptyCache() {
+	modifierCachLock.Lock()
+	for _, modCacheEntry := range modifierCache {
+	cacheempty:
+		for {
+			if modCacheEntry.modCount > 0 {
+				select {
+				case mod := <-modCacheEntry.modifierChan:
+					mod.Close()
+					atomic.AddUint64(&modCacheEntry.modCount, ^uint64(0))
+				default:
+					break cacheempty
+				}
+			} else {
+				break cacheempty
+			}
+		}
+	}
+	modifierCachLock.Unlock()
+}
+
 func PruneCache(env string, addr string, limit uint64) {
 	if modifierCache != nil && modifierCache[fmt.Sprintf("%s+%s", env, addr)] != nil {
 		if modifierCache[fmt.Sprintf("%s+%s", env, addr)].modCount > limit {
@@ -222,13 +275,21 @@ func PruneCache(env string, addr string, limit uint64) {
 		}
 	}
 }
+func (m *Modifier) Reset() {
+	m.ProjectIndex = []string{}
+	m.SectionKey = ""
+	m.SectionName = ""
+	m.SectionPath = ""
+	m.SubSectionName = ""
+	m.SubSectionValue = ""
+}
 
 func (m *Modifier) CleanCache(limit uint64) {
 	m.Close()
 	if _, ok := modifierCache[m.Env]; ok {
 		cleanCacheHelper(m.Env, m.client.Address(), limit)
 	} else {
-		cleanCacheHelper(m.RawEnv, m.client.Address(), limit)
+		cleanCacheHelper(m.EnvBasis, m.client.Address(), limit)
 	}
 }
 
@@ -494,21 +555,23 @@ func (m *Modifier) ReadMapValue(valueMap map[string]interface{}, path string, ke
 		if value, ok := valueMap[key].(string); ok {
 			return value, nil
 		} else if stringer, ok := valueMap[key].(fmt.GoStringer); ok {
-			return stringer.GoString(), nil
+			mapval := stringer.GoString()
+			memprotectopts.MemProtect(nil, &mapval)
+			return mapval, nil
 		} else if stringer, ok := valueMap[key].((json.Number)); ok {
 			return stringer.String(), nil
 		} else {
-			return "", fmt.Errorf("cannot convert value at %s to string", key)
+			return EMPTY_STRING, fmt.Errorf("cannot convert value at %s to string", key)
 		}
 	}
-	return "", fmt.Errorf("key '%s' not found in '%s' with env '%s'", key, path, m.Env)
+	return EMPTY_STRING, fmt.Errorf("key '%s' not found in '%s' with env '%s'", key, path, m.Env)
 }
 
 // ReadValue takes a path and a key and returns the corresponding value from the vault
 func (m *Modifier) ReadValue(path string, key string) (string, error) {
 	valueMap, err := m.ReadData(path)
 	if err != nil {
-		return "", err
+		return EMPTY_STRING, err
 	}
 	return m.ReadMapValue(valueMap, path, key)
 }
@@ -540,10 +603,13 @@ retryQuery:
 	}
 	if err != nil {
 		logger.Printf("modifier failing after %d retries.\n", retries)
+		return nil, err
 	}
 
-	if data, ok := secret.Data["metadata"].(map[string]interface{}); ok {
-		return data, err
+	if secret != nil {
+		if data, ok := secret.Data["metadata"].(map[string]interface{}); ok {
+			return data, err
+		}
 	}
 	return nil, errors.New("could not get metadata from vault response")
 }
@@ -622,7 +688,7 @@ retryQuery:
 	}
 	if err != nil {
 		logger.Printf("Modifier failing after %d retries.\n", retries)
-		logger.Printf(err.Error())
+		logger.Printf("Error: %s\n", err.Error())
 	}
 	return result, err
 }
@@ -679,7 +745,7 @@ func (m *Modifier) AdjustValue(path string, data map[string]interface{}, n int, 
 			// Convert from stored string value to int
 			oldValue, err := strconv.Atoi(oldData[metricsKey].(string))
 			if err != nil {
-				logger.Printf("Could not convert value to int at: " + metricsKey)
+				logger.Printf("Could not convert value to int at: %s\n", strings.ReplaceAll(metricsKey, "\n", ""))
 				continue
 			}
 			newValue := strconv.Itoa(oldValue + n)
@@ -719,7 +785,7 @@ func (m *Modifier) GetProjectServicesMap(logger *log.Logger) (map[string][]strin
 	availProjects := projectData.Data["keys"].([]interface{})
 	for _, availProject := range availProjects {
 		serviceData, serviceErr := m.List("templates/"+availProject.(string), logger)
-		if err != nil {
+		if serviceErr != nil {
 			return nil, serviceErr
 		}
 
@@ -749,7 +815,7 @@ func (m *Modifier) GetVersionValues(mod *Modifier, wantCerts bool, enginePath st
 
 	if len(mod.ProjectIndex) > 0 {
 		enginePath = enginePath + "/Index/" + mod.ProjectIndex[0] + "/" + mod.SectionName + "/" + mod.SubSectionValue
-		mod.Env = mod.RawEnv
+		mod.Env = mod.EnvBasis
 	}
 	userPaths, err := mod.List(enginePath+"/", logger)
 	versionDataMap := make(map[string]map[string]interface{}, 0)
@@ -779,7 +845,8 @@ func (m *Modifier) GetVersionValues(mod *Modifier, wantCerts bool, enginePath st
 			if certPath != "" {
 				foundService := false
 				for _, service := range mod.VersionFilter {
-					if strings.HasSuffix(certPath, service) && !foundService {
+					certPathNoExt := strings.Split(certPath, ".")
+					if strings.HasSuffix(certPathNoExt[0], service) && !foundService {
 						foundService = true
 					}
 				}
@@ -794,6 +861,9 @@ func (m *Modifier) GetVersionValues(mod *Modifier, wantCerts bool, enginePath st
 
 		certPaths = filteredCertPaths
 		for _, certPath := range certPaths {
+			certPath = strings.Replace(certPath, "/Common/", "/", 1)
+			certPathParts := strings.Split(certPath, ".")
+			certPath = certPathParts[0]
 			if _, ok := versionDataMap[certPath]; !ok {
 				metadataValue, err := mod.ReadVersionMetadata(certPath, logger)
 				if err != nil {

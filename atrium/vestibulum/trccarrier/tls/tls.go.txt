@@ -1,0 +1,70 @@
+package tls
+
+import (
+	"crypto"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"os"
+)
+
+// LoadPrivateKeyPEM loads a PKCS#1, DER encoded private key from a PEM file
+func LoadPrivateKeyPEM(filePath string) (crypto.PrivateKey, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	pemBlock, err := pem.Decode(file)
+	if err != nil {
+		return nil, err
+	}
+
+	if pemBlock.Type != "PRIVATE KEY" {
+		return nil, errors.New("invalid PEM block type")
+	}
+
+	privateKey, err := x509.ParsePKCS1PrivateKey(pemBlock.Bytes)
+	if err != nil {
+		return nil, err
+	}
+
+	return privateKey, nil
+}
+
+func VerifyCertificate(cert *x509.Certificate, privateKey crypto.PrivateKey) (err error) {
+	pubKey, err := parsePublicKey(cert.SubjectPublicKeyInfo.Raw)
+	if err != nil {
+		return err
+	}
+
+	// Extract tbsCertificate (certificate without signature)
+	var tbsCertificate []byte
+	if _, err := cert.RawTBSCertificate(); err != nil {
+		return err
+	}
+
+	// Verify signature using crypto.Signer interface
+	if err := privateKey.Sign(crypto.SHA256, tbsCertificate, nil); err != nil {
+		if errors.Is(err, crypto.ErrVerificationFailed) {
+			return errors.New("certificate signature verification failed")
+		}
+		return err
+	}
+
+	return nil
+}
+
+func parsePublicKey(raw []byte) (crypto.PublicKey, error) {
+	// Parse the raw bytes based on the public key type in cert.PublicKeyAlgorithm
+	switch cert.PublicKeyAlgorithm {
+	case x509.ECDSA:
+		return x509.ParseECPublicKey(raw)
+	case x509.RSA:
+		return x509.ParsePKCS1PublicKey(raw)
+		// Handle other public key types if needed
+	default:
+		return nil, errors.New("unsupported public key algorithm")
+	}
+}

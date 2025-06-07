@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/trimble-oss/tierceron/buildopts/xencryptopts"
 	eUtils "github.com/trimble-oss/tierceron/pkg/utils"
+	"github.com/trimble-oss/tierceron/pkg/utils/config"
 	helperkv "github.com/trimble-oss/tierceron/pkg/vaulthelper/kv"
 )
 
@@ -18,7 +20,7 @@ func FieldValidator(fields string, secSection map[string]map[string]map[string]s
 	for _, valueField := range valueFields {
 		valFieldMap[valueField] = false
 	}
-	for valueField, _ := range valFieldMap {
+	for valueField := range valFieldMap {
 		for secretSectionMap := range secSection["super-secrets"] {
 			if _, ok := secSection["super-secrets"][secretSectionMap][valueField]; ok {
 				valFieldMap[valueField] = true
@@ -33,7 +35,7 @@ func FieldValidator(fields string, secSection map[string]map[string]map[string]s
 	}
 
 	for valField, valFound := range valFieldMap {
-		if !valFound {
+		if valField != "encryptionSecret" && !valFound {
 			return errors.New("This field does not exist in this seed file: " + valField)
 		}
 	}
@@ -41,11 +43,37 @@ func FieldValidator(fields string, secSection map[string]map[string]map[string]s
 	return nil
 }
 
-var encryptSecret = ""
+func loadSecretFromSecretStore(mod *helperkv.Modifier) (map[string]interface{}, error) {
+	region := "west"
+	if len(mod.Regions) > 0 {
+		// Chewbacca: Select a region intelligently.
+		region = mod.Regions[0]
+	}
 
-func SetEncryptionSecret(driverConfig *eUtils.DriverConfig) error {
+	data, readErr := mod.ReadData(fmt.Sprintf("super-secrets/Index/TrcVault/regionId/%s/Database", region))
+	if readErr != nil {
+		return nil, readErr
+	}
+	if data == nil {
+		return nil, errors.New("encryption secret could not be found")
+	} else {
+		if encrypSec, ok := data["dbencryptionSecret"].(string); ok && encrypSec != "" {
+			if setEncryptErr := xencryptopts.BuildOptions.SetEncryptionSecret(encrypSec); setEncryptErr != nil {
+				return nil, setEncryptErr
+			}
+		}
+	}
+
+	return map[string]interface{}{}, nil
+}
+
+func SetEncryptionSecret(driverConfig *config.DriverConfig) error {
 	var encryptionSecretField = "encryptionSecret"
-	if len(driverConfig.Trcxe) > 2 {
+
+	if slices.ContainsFunc(driverConfig.Trcxe,
+		func(s string) bool {
+			return driverConfig.NoVault || strings.Contains(s, encryptionSecretField) // Novault requires manual entry of encryptionSecret
+		}) {
 		var input, validateInput string
 		fmt.Printf("Enter desired value for '%s': \n", encryptionSecretField)
 		fmt.Scanln(&input)
@@ -54,46 +82,47 @@ func SetEncryptionSecret(driverConfig *eUtils.DriverConfig) error {
 		if validateInput != input {
 			return errors.New("Entered values for '" + encryptionSecretField + "' do not match, exiting...")
 		}
-		encryptSecret = input
-	} else {
-		mod, modErr := helperkv.NewModifier(driverConfig.Insecure, driverConfig.Token, driverConfig.VaultAddress, driverConfig.Env, driverConfig.Regions, true, driverConfig.CoreConfig.Log)
-		if modErr != nil {
-			eUtils.LogErrorObject(&driverConfig.CoreConfig, modErr, false)
+		if setEncryptErr := xencryptopts.BuildOptions.SetEncryptionSecret(input); setEncryptErr != nil {
+			fmt.Printf("Entering encryptionSecret directly not supported\n")
+			return setEncryptErr
 		}
-		mod.Env = strings.Split(driverConfig.Env, "_")[0]
-		data, readErr := xencryptopts.BuildOptions.LoadSecretFromSecretStore(mod)
+	} else {
+		tokenName := fmt.Sprintf("config_token_%s", driverConfig.CoreConfig.EnvBasis)
+
+		mod, modErr := helperkv.NewModifierFromCoreConfig(driverConfig.CoreConfig, tokenName, driverConfig.CoreConfig.Env, true)
+		if modErr != nil {
+			eUtils.LogErrorObject(driverConfig.CoreConfig, modErr, false)
+		}
+		mod.Env = strings.Split(driverConfig.CoreConfig.Env, "_")[0]
+		data, readErr := loadSecretFromSecretStore(mod)
 		if readErr != nil {
 			return readErr
 		}
 		if data == nil {
-			return errors.New("Encryption secret could not be found.")
-		}
-
-		if encrypSec, ok := data["encryptionSecret"].(string); ok && encrypSec != "" {
-			encryptSecret = encrypSec
+			return errors.New("encryption secret could not be found")
 		}
 	}
 	return nil
 }
 
 func GetEncryptors(secSection map[string]map[string]map[string]string) (map[string]interface{}, error) {
-	encrpytion := map[string]interface{}{}
-	encrpytionList := []string{"salt", "initial_value"}
-	for _, encryptionField := range encrpytionList {
+	encryption := map[string]interface{}{}
+	encryptionList := []string{"salt", "initial_value"}
+	for _, encryptionField := range encryptionList {
 		for secretSectionMap := range secSection["super-secrets"] {
 			if value, ok := secSection["super-secrets"][secretSectionMap][encryptionField]; ok {
 				if value != "" {
-					encrpytion[encryptionField] = value
+					encryption[encryptionField] = value
 				}
 			}
 		}
 	}
 
-	if ok, ok1 := encrpytion["salt"], encrpytion["initial_value"]; ok == nil || ok1 == nil {
+	if ok, ok1 := encryption["salt"], encryption["initial_value"]; ok == nil || ok1 == nil {
 		return nil, errors.New("could not find encryption values")
 	}
 
-	return encrpytion, nil
+	return encryption, nil
 }
 
 func CreateEncryptedReadMap(encryptedKeys string) map[string]interface{} {
@@ -108,7 +137,7 @@ func CreateEncryptedReadMap(encryptedKeys string) map[string]interface{} {
 }
 
 func FieldReader(encryptedMap map[string]interface{}, secSection map[string]map[string]map[string]string, valSection map[string]map[string]map[string]string, decryption map[string]interface{}) error {
-	for field, _ := range encryptedMap {
+	for field := range encryptedMap {
 		found := false
 		for secretSectionMap := range secSection["super-secrets"] {
 			if secretVal, ok := secSection["super-secrets"][secretSectionMap][field]; ok {

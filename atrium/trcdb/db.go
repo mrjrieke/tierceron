@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/trimble-oss/tierceron/pkg/utils/config"
+
 	"github.com/trimble-oss/tierceron/atrium/trcdb/engine"
 	eUtils "github.com/trimble-oss/tierceron/pkg/utils"
 	helperkv "github.com/trimble-oss/tierceron/pkg/vaulthelper/kv"
@@ -22,13 +24,14 @@ import (
 var m sync.Mutex
 
 // CreateEngine - creates a Tierceron query engine for query of configurations.
-func CreateEngine(driverConfig *eUtils.DriverConfig,
+func CreateEngine(driverConfig *config.DriverConfig,
 	templatePaths []string, env string, dbname string) (*engine.TierceronEngine, error) {
 
 	te := &engine.TierceronEngine{Database: sqlememory.NewDatabase(dbname), Engine: nil, TableCache: map[string]*engine.TierceronTable{}, Context: sqles.NewEmptyContext(), Config: *driverConfig}
 
 	var goMod *helperkv.Modifier
-	goMod, errModInit := helperkv.NewModifier(driverConfig.Insecure, driverConfig.Token, driverConfig.VaultAddress, driverConfig.Env, driverConfig.Regions, false, driverConfig.CoreConfig.Log)
+	tokenNamePtr := driverConfig.CoreConfig.GetCurrentToken("config_token_%s")
+	goMod, errModInit := helperkv.NewModifierFromCoreConfig(driverConfig.CoreConfig, *tokenNamePtr, driverConfig.CoreConfig.Env, false)
 	if errModInit != nil {
 		return nil, errModInit
 	}
@@ -44,7 +47,7 @@ func CreateEngine(driverConfig *eUtils.DriverConfig,
 	goMod.Env = ""
 	tempEnterprises, err := goMod.List("values", driverConfig.CoreConfig.Log)
 	if err != nil {
-		eUtils.LogErrorObject(&driverConfig.CoreConfig, err, false)
+		eUtils.LogErrorObject(driverConfig.CoreConfig, err, false)
 		return nil, err
 	}
 	if tempEnterprises != nil {
@@ -58,7 +61,7 @@ func CreateEngine(driverConfig *eUtils.DriverConfig,
 			// Load all vault table data into tierceron sql engine.
 			for _, envEnterprise := range envEnterprises {
 				wgEnterprise.Add(1)
-				go func(driverConfig *eUtils.DriverConfig, enterpriseEnv string) {
+				go func(driverConfig *config.DriverConfig, enterpriseEnv string) {
 					defer wgEnterprise.Done()
 					if !strings.Contains(enterpriseEnv, ".") {
 						return
@@ -123,17 +126,17 @@ func CreateEngine(driverConfig *eUtils.DriverConfig,
 
 // Query - queries configurations using standard ANSI SQL syntax.
 // Example: select * from ServiceTechMobileAPI.configfile
-func Query(te *engine.TierceronEngine, query string, queryLock *sync.Mutex) (string, []string, [][]interface{}, error) {
+func Query(te *engine.TierceronEngine, query string, queryLock ...*sync.Mutex) (string, []string, [][]interface{}, error) {
 	// Create a test memory database and register it to the default engine.
 
 	//ctx := sql.NewContext(context.Background(), sql.WithIndexRegistry(sql.NewIndexRegistry()), sql.WithViewRegistry(sql.NewViewRegistry())).WithCurrentDB(te.Database.Name())
 	//ctx := sql.NewContext(context.Background()).WithCurrentDB(te.Database.Name())
 	ctx := sqles.NewContext(context.Background())
 	ctx.WithQuery(query)
-	queryLock.Lock()
+	lockQuery(queryLock)
 	//	te.Context = ctx
 	schema, r, err := te.Engine.Query(ctx, query)
-	queryLock.Unlock()
+	unlockQuery(queryLock)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") {
 			return "", nil, nil, errors.New("Duplicate primary key found.")
@@ -157,9 +160,9 @@ func Query(te *engine.TierceronEngine, query string, queryLock *sync.Mutex) (str
 		// Iterate results and print them.
 		okResult := false
 		for {
-			queryLock.Lock()
+			lockQuery(queryLock)
 			row, err := r.Next(ctx)
-			queryLock.Unlock()
+			unlockQuery(queryLock)
 			if err == io.EOF {
 				break
 			} else if err != nil {
@@ -194,17 +197,17 @@ func Query(te *engine.TierceronEngine, query string, queryLock *sync.Mutex) (str
 
 // Query - queries configurations using standard ANSI SQL syntax.
 // Example: select * from ServiceTechMobileAPI.configfile
-func QueryWithBindings(te *engine.TierceronEngine, query string, bindings map[string]sql.Expression, queryLock *sync.Mutex) (string, []string, [][]interface{}, error) {
+func QueryWithBindings(te *engine.TierceronEngine, query string, bindings map[string]sqles.Expression, queryLock ...*sync.Mutex) (string, []string, [][]interface{}, error) {
 	// Create a test memory database and register it to the default engine.
 
 	//ctx := sql.NewContext(context.Background(), sql.WithIndexRegistry(sql.NewIndexRegistry()), sql.WithViewRegistry(sql.NewViewRegistry())).WithCurrentDB(te.Database.Name())
 	//ctx := sql.NewContext(context.Background()).WithCurrentDB(te.Database.Name())
 	ctx := sql.NewContext(context.Background())
 	ctx.WithQuery(query)
-	queryLock.Lock()
+	lockQuery(queryLock)
 	//	te.Context = ctx
 	schema, r, queryErr := te.Engine.QueryWithBindings(ctx, query, bindings)
-	queryLock.Unlock()
+	unlockQuery(queryLock)
 	if queryErr != nil {
 		if strings.Contains(queryErr.Error(), "duplicate") {
 			return "", nil, nil, errors.New("Duplicate primary key found.")
@@ -228,9 +231,9 @@ func QueryWithBindings(te *engine.TierceronEngine, query string, bindings map[st
 		// Iterate results and print them.
 		okResult := false
 		for {
-			queryLock.Lock()
+			lockQuery(queryLock)
 			row, err := r.Next(ctx)
-			queryLock.Unlock()
+			unlockQuery(queryLock)
 			if err == io.EOF {
 				break
 			}
@@ -259,4 +262,24 @@ func QueryWithBindings(te *engine.TierceronEngine, query string, bindings map[st
 	}
 
 	return tableName, columns, matrix, nil
+}
+
+func lockQuery(queryLock []*sync.Mutex) {
+	for _, qLock := range queryLock {
+		if qLock == nil {
+			continue
+		} else {
+			qLock.Lock()
+		}
+	}
+}
+
+func unlockQuery(queryLock []*sync.Mutex) {
+	for _, qLock := range queryLock {
+		if qLock == nil {
+			continue
+		} else {
+			qLock.Unlock()
+		}
+	}
 }

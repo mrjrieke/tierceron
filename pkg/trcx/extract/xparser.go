@@ -11,6 +11,7 @@ import (
 	"github.com/trimble-oss/tierceron/buildopts/coreopts"
 	"github.com/trimble-oss/tierceron/pkg/core"
 	eUtils "github.com/trimble-oss/tierceron/pkg/utils"
+	"github.com/trimble-oss/tierceron/pkg/utils/config"
 
 	vcutils "github.com/trimble-oss/tierceron/pkg/cli/trcconfigbase/utils"
 	helperkv "github.com/trimble-oss/tierceron/pkg/vaulthelper/kv"
@@ -37,7 +38,7 @@ type TemplateResultData struct {
 //
 // Output:
 //   - Parsed string containing the .yml file
-func ToSeed(driverConfig *eUtils.DriverConfig, mod *helperkv.Modifier,
+func ToSeed(driverConfig *config.DriverConfig, mod *helperkv.Modifier,
 	cds *vcutils.ConfigDataStore,
 	templatePath string,
 	project string,
@@ -73,7 +74,7 @@ func ToSeed(driverConfig *eUtils.DriverConfig, mod *helperkv.Modifier,
 		templateFile, err := os.ReadFile(templatePath)
 		newTemplate = string(templateFile)
 		if err != nil {
-			return nil, nil, nil, 0, eUtils.LogAndSafeExit(&driverConfig.CoreConfig, err.Error(), -1)
+			return nil, nil, nil, 0, eUtils.LogAndSafeExit(driverConfig.CoreConfig, err.Error(), -1)
 		}
 	}
 
@@ -81,7 +82,7 @@ func ToSeed(driverConfig *eUtils.DriverConfig, mod *helperkv.Modifier,
 	t := template.New("template")
 	theTemplate, err := t.Parse(newTemplate)
 	if err != nil {
-		return nil, nil, nil, 0, eUtils.LogAndSafeExit(&driverConfig.CoreConfig, err.Error(), -1)
+		return nil, nil, nil, 0, eUtils.LogAndSafeExit(driverConfig.CoreConfig, err.Error(), -1)
 	}
 	commandList := theTemplate.Tree.Root
 
@@ -92,14 +93,14 @@ func ToSeed(driverConfig *eUtils.DriverConfig, mod *helperkv.Modifier,
 			for _, arg := range fields.Cmds[0].Args {
 				templateParameter := strings.ReplaceAll(arg.String(), "\\\"", "\"")
 				if strings.Contains(templateParameter, "~") {
-					eUtils.LogInfo(&driverConfig.CoreConfig, "Unsupported parameter name character ~: "+templateParameter)
+					eUtils.LogInfo(driverConfig.CoreConfig, "Unsupported parameter name character ~: "+templateParameter)
 					return nil, nil, nil, 0, errors.New("Unsupported parameter name character ~: " + templateParameter)
 				}
 				args = append(args, templateParameter)
 			}
 
 			// Gets the parsed file line
-			errParse := Parse(&driverConfig.CoreConfig, cds,
+			errParse := Parse(driverConfig.CoreConfig, cds,
 				args,
 				pathSlice[len(pathSlice)-2],
 				templatePathSlice,
@@ -125,7 +126,7 @@ func ToSeed(driverConfig *eUtils.DriverConfig, mod *helperkv.Modifier,
 //
 // Output:
 //   - String(s) containing the structure of the template section
-func GetInitialTemplateStructure(driverConfig *eUtils.DriverConfig, templatePathSlice []string) ([]string, int, int) {
+func GetInitialTemplateStructure(driverConfig *config.DriverConfig, templatePathSlice []string) ([]string, int, int) {
 
 	var templateDir int
 	var templateDepth int
@@ -295,13 +296,24 @@ func Parse(config *core.CoreConfig, cds *vcutils.ConfigDataStore,
 			defaultSecret)
 
 		if cds != nil {
-			for _, region := range cds.Regions {
+			if len(cds.Regions) > 0 {
+				for _, region := range cds.Regions {
+					parseAndSetSection(cds,
+						secretSection,
+						"super-secrets",
+						service,
+						keyPath,
+						keyName+"~"+region,
+						secret,
+						defaultSecret)
+				}
+			} else {
 				parseAndSetSection(cds,
 					secretSection,
 					"super-secrets",
 					service,
 					keyPath,
-					keyName+"~"+region,
+					keyName,
 					secret,
 					defaultSecret)
 			}

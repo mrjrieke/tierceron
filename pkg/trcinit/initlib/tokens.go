@@ -12,8 +12,8 @@ import (
 	pb "github.com/trimble-oss/tierceron/trcweb/rpc/apinator"
 )
 
-// UploadTokens accepts a file directory and vault object to upload tokens to. Logs to pased logger
-func UploadTokens(config *core.CoreConfig, dir string, fileFilterPtr *string, v *sys.Vault) []*pb.InitResp_Token {
+// UploadTokens accepts a file directory and vault object to upload tokens to. Logs to passed logger
+func UploadTokens(config *core.CoreConfig, dir string, tokenFileFiltersSet map[string]bool, v *sys.Vault) []*pb.InitResp_Token {
 	tokens := []*pb.InitResp_Token{}
 	config.Log.SetPrefix("[TOKEN]")
 	config.Log.Printf("Writing tokens from %s\n", dir)
@@ -27,8 +27,17 @@ func UploadTokens(config *core.CoreConfig, dir string, fileFilterPtr *string, v 
 		filename = filename[0 : len(filename)-len(ext)]
 
 		if ext == ".yml" || ext == ".yaml" { // Request token from vault
-			if *fileFilterPtr != "" && !strings.Contains(file.Name(), *fileFilterPtr) {
-				continue
+			if len(tokenFileFiltersSet) > 0 {
+				found := false
+				for tokenFilter, _ := range tokenFileFiltersSet {
+					if strings.Contains(file.Name(), tokenFilter) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					continue
+				}
 			}
 			config.Log.Printf("\tFound token file: %s\n", file.Name())
 			tokenName, err := v.CreateTokenFromFile(dir + "/" + file.Name())

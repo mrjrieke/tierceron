@@ -6,6 +6,9 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/trimble-oss/tierceron/atrium/trcflow/core/flowcorehelper"
+	"github.com/trimble-oss/tierceron/pkg/trcnet"
 )
 
 // Folder prefix for _seed and _templates.  This function takes a list of paths and looking
@@ -52,14 +55,20 @@ func GetVaultInstallRoot() string {
 
 // GetSupportedEndpoints - return a list of supported endpoints.  Override this function to provide
 // a list of supported endpoints.
-func GetSupportedEndpoints(prod bool) []string {
+func GetSupportedEndpoints(prod bool) [][]string {
 	if prod {
-		return []string{
-			"prodtierceron.test",
+		return [][]string{
+			{
+				"prodtierceron.test",
+				"n/a",
+			},
 		}
 	} else {
-		return []string{
-			"tierceron.test:1234",
+		return [][]string{
+			{
+				"tierceron.test:1234",
+				"127.0.0.1",
+			},
 		}
 	}
 }
@@ -105,54 +114,28 @@ func GetUserCodeField() string {
 // Override to provide a map of active sessions by querying the provided database connection.
 // Used to provide active sessions in the web interface -- not maintained..
 func ActiveSessions(db *sql.DB) ([]map[string]interface{}, error) {
-	return nil, errors.New("Not implemented")
+	return nil, errors.New("not implemented")
 }
 
 // FindIndexForService - override to provide a custom index for a given service.  This should return
 // the name of the column that is to be treated as the index for the table.
-// TODO: This function is miss-named.  It should be called FindInexForTable where project = databaseName and service = tableName.
+// TODO: This function is miss-named.  It should be called FindIndexForFlow where project = databaseName and service = tableName.
 func FindIndexForService(project string, service string) (string, []string, string, error) {
-	return "", nil, "", errors.New("Not implemented")
+	if project == flowcorehelper.TierceronFlowDB {
+		if service == flowcorehelper.TierceronFlowConfigurationTableName {
+			return "flowName", nil, "", nil
+		} else {
+			return "", nil, "", errors.New("not implemented")
+		}
+	} else {
+		return "", nil, "", errors.New("not implemented")
+	}
 }
 
 // GetSyncedTables - return a list of synced tables from a remote source in TrcDb.
 // Override this function to provide a list of synced tables.
 func GetSyncedTables() []string {
 	return []string{}
-}
-
-// Utilized by carrier to indicate the following map attributes:
-//
-//		exitOnFailure - if true, the plugin will exit on failure
-//		regions - a list of regions to be supported by the carrier
-//		pluginNameList - a list of plugins to be supported by the carrier
-//		               the carrier is responsible for keeping the indicated plugins
-//		               up to date and deployed with certified code...
-//	          example values: trcsh, trc-vault-plugin
-//
-//		templatePath - a list of template paths (presently 1 template) to the certification
-//		               template utilized by plugins.  This template references the published template
-//		               originating from the source:
-//		                  installation/trcdb/trc_templates/TrcVault/Certify/config.yml.tmpl
-//		logNamespace - a log namespace to be used by the carrier in logging.
-func ProcessDeployPluginEnvConfig(pluginEnvConfig map[string]interface{}) map[string]interface{} {
-	if pluginEnvConfig != nil {
-		pluginEnvConfig["exitOnFailure"] = false
-		pluginEnvConfig["regions"] = []string{"west"}
-		pluginEnvConfig["pluginNameList"] = []string{"trc-vault-plugin"}
-		pluginEnvConfig["templatePath"] = []string{"trc_templates/TrcVault/Certify/config.yml.tmpl"}
-		pluginEnvConfig["logNamespace"] = "trccarrier"
-		return pluginEnvConfig
-	} else {
-		return map[string]interface{}{
-			"env":            "dev",
-			"exitOnFailure":  false,
-			"regions":        []string{"west"},
-			"pluginNameList": []string{"trc-vault-plugin"},
-			"templatePath":   []string{"trc_templates/TrcVault/Certify/config.yml.tmpl"},
-			"logNamespace":   "trccarrier",
-		}
-	}
 }
 
 // DecryptSecretConfig
@@ -162,8 +145,8 @@ func ProcessDeployPluginEnvConfig(pluginEnvConfig map[string]interface{}) map[st
 //     encrypted password found within the source database configuration.
 //
 // returns: the decrypted password to be used in establishing a database connection.
-func DecryptSecretConfig(sourceDatabaseConfigs map[string]interface{}, config map[string]interface{}) string {
-	return ""
+func DecryptSecretConfig(sourceDatabaseConfigs map[string]interface{}, config map[string]interface{}) (string, error) {
+	return "", nil
 }
 
 // Utlized to provide Data Flow Statistics components: database name in which the DFS resides and the index
@@ -233,4 +216,69 @@ func PreviousStateCheck(currentState int) int {
 	default:
 		return 3
 	}
+}
+
+func IsValidIP(ipaddr string) (bool, error) {
+	return true, nil
+}
+
+func GetMachineID() string {
+	netIP, err := trcnet.NetIpAddr(IsValidIP)
+	if err != nil {
+		return ""
+	}
+	return netIP
+}
+
+func GetPluginRestrictedMappings() map[string][][]string {
+	return map[string][][]string{
+		"trcsh-curator": {
+			[]string{"-templateFilter=TrcVault/TrcshCurator", "-restricted=TrcshCurator", "-serviceFilter=config", "-indexFilter=config"},
+			[]string{"-templateFilter=TrcVault/PluginTool", "-restricted=PluginTool", "-serviceFilter=config", "-indexFilter=config"},
+		},
+		"trcshqaw": {
+			[]string{"-templateFilter=APIMConfig/APIMConfig", "-restricted=APIMConfig", "-serviceFilter=config", "-indexFilter=config"},
+		},
+		"trcshqk": {
+			[]string{"-templateFilter=APIMConfig/APIMConfig", "-restricted=APIMConfig", "-serviceFilter=config", "-indexFilter=config"},
+		},
+		"trcsh-cursor-aw": {
+			[]string{"-templateFilter=TrcVault/TrcshCursorAW", "-restricted=TrcshCursorAW", "-serviceFilter=config", "-indexFilter=config"},
+		},
+		"trcsh-cursor-k": {
+			[]string{"-templateFilter=TrcVault/TrcshCursorK", "-restricted=TrcshCursorK", "-serviceFilter=config", "-indexFilter=config"},
+		},
+		"trc-vault-plugin": {
+			[]string{"-templateFilter=FlumeDatabase/TierceronFlow", "-indexed=FlumeDatabase", "-serviceFilter=TierceronFlow", "-indexFilter=flowName"},
+			[]string{"-templateFilter=TrcVault/Database", "-indexed=TrcVault", "-serviceFilter=Database", "-indexFilter=regionId"},
+			[]string{"-templateFilter=TrcVault/Identity", "-restricted=Identity", "-serviceFilter=config", "-indexFilter=config"},
+			[]string{"-templateFilter=TrcVault/VaultDatabase", "-restricted=VaultDatabase", "-serviceFilter=config", "-indexFilter=config"},
+			[]string{"-templateFilter=TrcVault/SpiralDatabase", "-restricted=SpiralDatabase", "-serviceFilter=config", "-indexFilter=config"},
+		},
+		"trchelloworld": {
+			[]string{"-templateFilter=Common/hello.crt,Common/hellokey.key,HelloProjectPlugin/HelloServicePlugin"},
+		},
+	}
+}
+
+func GetConfigPaths(pluginName string) []string {
+	switch pluginName {
+	// An example mutabilis plugin -- not really implemented as such.
+	case "healthcheck":
+		return []string{
+			"Common/serviceclientcert.pem.mf.tmpl",
+			"Common/servicecert.crt.mf.tmpl",
+			"Common/servicekey.key.mf.tmpl",
+			"/local_config/application",
+			"/local_config/contrast",
+			"/local_config/logback",
+			"/local_config/newrelic",
+		}
+	default:
+		return []string{}
+	}
+}
+
+func GetSupportedCertIssuers() []string {
+	return []string{"http://r3.i.lencr.org/"}
 }

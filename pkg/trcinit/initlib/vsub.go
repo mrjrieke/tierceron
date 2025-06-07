@@ -8,26 +8,34 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/trimble-oss/tierceron/pkg/core"
 	eUtils "github.com/trimble-oss/tierceron/pkg/utils"
+	"github.com/trimble-oss/tierceron/pkg/utils/config"
 	helperkv "github.com/trimble-oss/tierceron/pkg/vaulthelper/kv"
 )
 
-func DownloadTemplates(config *core.CoreConfig, mod *helperkv.Modifier, dirName string, logger *log.Logger, templatePaths *string) {
+func DownloadTemplates(driverConfig *config.DriverConfig, mod *helperkv.Modifier, dirName string, logger *log.Logger, templatePaths *string) {
 	var filterTemplatePathSlice []string
 	if len(*templatePaths) > 0 {
 		filterTemplatePathSlice = strings.Split(*templatePaths, ",")
 	}
-
 	for _, filterTemplatePath := range filterTemplatePathSlice {
 		path := filterTemplatePath
 		ext := ""
+		if strings.Contains(path, "Common") {
+			if !strings.Contains(path, ".") {
+				eUtils.LogErrorMessage(driverConfig.CoreConfig, "Expecting file extension with filepath", false)
+				fmt.Println("Expecting file extension with filepath: " + path)
+				if eUtils.IsWindows() {
+					fmt.Println("Make sure filepath is in quotes.")
+				}
+			}
+		}
 		if !strings.HasSuffix(filterTemplatePath, "/") {
 			path = filterTemplatePath + "/"
 		}
-		tfMap, err := mod.ReadData(fmt.Sprintf("templates/%stemplate-file", path)) //Grab extention of file
+		tfMap, err := mod.ReadData(fmt.Sprintf("templates/%stemplate-file", path)) //Grab extension of file
 		if err != nil {
-			eUtils.LogErrorMessage(config, "Skipping template: "+path+" Error: "+err.Error(), false)
+			eUtils.LogErrorMessage(driverConfig.CoreConfig, "Skipping template: "+path+" Error: "+err.Error(), false)
 			continue
 		}
 		if _, extOk := tfMap["ext"]; extOk {
@@ -40,12 +48,12 @@ func DownloadTemplates(config *core.CoreConfig, mod *helperkv.Modifier, dirName 
 		} else {
 			// TODO: In recent run in prod, sub was printing an annoying warning here
 			// and yet correct templates seem to have gotten created...
-			fmt.Println("No data found for: " + filterTemplatePath + "template-file")
+			fmt.Println("No data found for: " + path + "template-file")
 			continue
 		}
 		templateBytes, decodeErr := base64.StdEncoding.DecodeString(data)
 		if decodeErr != nil {
-			eUtils.LogErrorMessage(config, "Couldn't decode data for: "+path+"template-file", false)
+			eUtils.LogErrorMessage(driverConfig.CoreConfig, "Couldn't decode data for: "+path+"template-file", false)
 			continue
 		}
 		//Ensure directory has been created
@@ -56,44 +64,50 @@ func DownloadTemplates(config *core.CoreConfig, mod *helperkv.Modifier, dirName 
 		fmt.Printf("templateDir: %s\n", templateAndFilePath)
 		fmt.Printf("Dir: %s\n", dirPath)
 		fmt.Printf("file: %s\n", file)
-		err = os.MkdirAll(dirPath, os.ModePerm)
-		if err != nil {
-			eUtils.LogErrorMessage(config, "Couldn't make directory: "+dirName+filePath, false)
-			continue
-		}
-		//create new file
 		templateFile := fmt.Sprintf("%s/%s%s.tmpl", dirPath, file, ext)
-		newFile, err := os.Create(templateFile)
-		if err != nil {
-			eUtils.LogErrorMessage(config, fmt.Sprintf("Couldn't create file: %s", templateFile), false)
-			continue
+
+		if driverConfig.SubOutputMemCache {
+			driverConfig.MemFs.WriteToMemFile(driverConfig.CoreConfig, &templateBytes, templateFile)
+		} else {
+			err = os.MkdirAll(dirPath, os.ModePerm)
+			if err != nil {
+				eUtils.LogErrorMessage(driverConfig.CoreConfig, "Couldn't make directory: "+dirName+filePath, false)
+				continue
+			}
+			if eUtils.IsWindows() {
+				templateFile = fmt.Sprintf("%s\\%s%s.tmpl", dirPath, file, ext)
+			}
+			newFile, err := os.Create(templateFile)
+			if err != nil {
+				eUtils.LogErrorMessage(driverConfig.CoreConfig, fmt.Sprintf("Couldn't create file: %s", templateFile), false)
+				continue
+			}
+			defer newFile.Close()
+			_, err = newFile.Write(templateBytes)
+			if err != nil {
+				eUtils.LogErrorMessage(driverConfig.CoreConfig, fmt.Sprintf("Couldn't write file: %s", templateFile), false)
+				continue
+			}
+			err = newFile.Sync()
+			if err != nil {
+				eUtils.LogErrorMessage(driverConfig.CoreConfig, fmt.Sprintf("Couldn't sync file: %s", templateFile), false)
+				continue
+			}
 		}
-		defer newFile.Close()
-		//write to file
-		_, err = newFile.Write(templateBytes)
-		if err != nil {
-			eUtils.LogErrorMessage(config, fmt.Sprintf("Couldn't write file: %s", templateFile), false)
-			continue
-		}
-		err = newFile.Sync()
-		if err != nil {
-			eUtils.LogErrorMessage(config, fmt.Sprintf("Couldn't sync file: %s", templateFile), false)
-			continue
-		}
-		fmt.Printf("File has been writen to %s\n", templateFile)
+		fmt.Printf("File has been written to %s\n", templateFile)
 	}
 }
 
-func DownloadTemplateDirectory(config *core.CoreConfig, mod *helperkv.Modifier, dirName string, logger *log.Logger, templateFilter *string) ([]string, error) {
-
+func DownloadTemplateDirectory(driverConfig *config.DriverConfig, mod *helperkv.Modifier, dirName string, logger *log.Logger, templateFilter *string) ([]string, error) {
 	var filterTemplateSlice []string
 	if len(*templateFilter) > 0 {
 		filterTemplateSlice = strings.Split(*templateFilter, ",")
 	}
 
-	templateList, err := mod.List("templates/", config.Log)
+	templateList, err := mod.List("templates/", driverConfig.CoreConfig.Log)
 	if err != nil {
-		eUtils.LogErrorMessage(config, "Couldn't read into paths under templates/", true)
+		eUtils.LogErrorMessage(driverConfig.CoreConfig, "Couldn't read into paths under templates/", false)
+		return nil, err
 	}
 	for _, templatePath := range templateList.Data {
 		for _, projectInterface := range templatePath.([]interface{}) {
@@ -114,9 +128,9 @@ func DownloadTemplateDirectory(config *core.CoreConfig, mod *helperkv.Modifier, 
 				}
 			}
 
-			allTemplateFilePaths, err1 := mod.GetTemplateFilePaths("templates/"+project+"/", config.Log)
+			allTemplateFilePaths, err1 := mod.GetTemplateFilePaths("templates/"+project+"/", driverConfig.CoreConfig.Log)
 			if err1 != nil {
-				eUtils.LogErrorMessage(config, "Couldn't read into paths under templates/"+project+"/", false)
+				eUtils.LogErrorMessage(driverConfig.CoreConfig, "Couldn't read into paths under templates/"+project+"/", false)
 				continue
 			}
 
@@ -153,9 +167,9 @@ func DownloadTemplateDirectory(config *core.CoreConfig, mod *helperkv.Modifier, 
 					continue
 				}
 				ext := ""
-				tfMap, err := mod.ReadData(path + "template-file") //Grab extention of file
+				tfMap, err := mod.ReadData(path + "template-file") //Grab extension of file
 				if err != nil {
-					eUtils.LogErrorMessage(config, "Skipping template: "+path+" Error: "+err.Error(), false)
+					eUtils.LogErrorMessage(driverConfig.CoreConfig, "Skipping template: "+path+" Error: "+err.Error(), false)
 					continue
 				}
 				if _, extOk := tfMap["ext"]; extOk {
@@ -173,7 +187,7 @@ func DownloadTemplateDirectory(config *core.CoreConfig, mod *helperkv.Modifier, 
 				}
 				templateBytes, decodeErr := base64.StdEncoding.DecodeString(data)
 				if decodeErr != nil {
-					eUtils.LogErrorMessage(config, "Couldn't decode data for: "+path+"template-file", false)
+					eUtils.LogErrorMessage(driverConfig.CoreConfig, "Couldn't decode data for: "+path+"template-file", false)
 					continue
 				}
 				//Ensure directory has been created
@@ -182,35 +196,41 @@ func DownloadTemplateDirectory(config *core.CoreConfig, mod *helperkv.Modifier, 
 				file := filePath[strings.LastIndex(filePath, "/"):]
 				dirPath := filepath.Dir(dirName + filePath)
 				if err != nil {
-					eUtils.LogErrorMessage(config, "Couldn't make directory: "+dirName+filePath, false)
+					eUtils.LogErrorMessage(driverConfig.CoreConfig, "Couldn't make directory: "+dirName+filePath, false)
 					continue
 				}
-				err = os.MkdirAll(dirPath, os.ModePerm)
-				if err != nil {
-					eUtils.LogErrorMessage(config, "Couldn't make directory components: "+dirPath, false)
-					continue
-				}
-				templateFile := fmt.Sprintf("%s%s%s.tmpl", dirPath, file, ext)
-				//create new file
-				newFile, err := os.Create(templateFile)
 
-				if err != nil {
-					eUtils.LogErrorMessage(config, "Couldn't create file: "+dirPath+file+ext+".tmpl", false)
-					continue
+				templateFile := fmt.Sprintf("%s%s%s.tmpl", dirPath, file, ext)
+
+				if driverConfig.SubOutputMemCache {
+					driverConfig.MemFs.WriteToMemFile(driverConfig.CoreConfig, &templateBytes, templateFile)
+				} else {
+					err = os.MkdirAll(dirPath, os.ModePerm)
+					if err != nil {
+						eUtils.LogErrorMessage(driverConfig.CoreConfig, "Couldn't make directory components: "+dirPath, false)
+						continue
+					}
+					//create new file
+					newFile, err := os.Create(templateFile)
+
+					if err != nil {
+						eUtils.LogErrorMessage(driverConfig.CoreConfig, "Couldn't create file: "+dirPath+file+ext+".tmpl", false)
+						continue
+					}
+					defer newFile.Close()
+					//write to file
+					_, err = newFile.Write(templateBytes)
+					if err != nil {
+						eUtils.LogErrorMessage(driverConfig.CoreConfig, "Couldn't write file: "+dirPath+file+ext+".tmpl", false)
+						continue
+					}
+					err = newFile.Sync()
+					if err != nil {
+						eUtils.LogErrorMessage(driverConfig.CoreConfig, "Couldn't sync file: "+dirPath+file+ext+".tmpl", false)
+						continue
+					}
 				}
-				defer newFile.Close()
-				//write to file
-				_, err = newFile.Write(templateBytes)
-				if err != nil {
-					eUtils.LogErrorMessage(config, "Couldn't write file: "+dirPath+file+ext+".tmpl", false)
-					continue
-				}
-				err = newFile.Sync()
-				if err != nil {
-					eUtils.LogErrorMessage(config, "Couldn't sync file: "+dirPath+file+ext+".tmpl", false)
-					continue
-				}
-				fmt.Println("File has been writen to " + dirPath + file + ext + ".tmpl")
+				fmt.Println("File has been written to " + dirPath + file + ext + ".tmpl")
 			}
 		}
 	}

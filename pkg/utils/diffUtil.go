@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/trimble-oss/tierceron/pkg/utils/config"
+
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
@@ -111,7 +113,7 @@ func LineByLineDiff(stringA *string, stringB *string, patchData bool, colorSkip 
 		diffs = diffs[:0]
 	}
 
-	//Seperates diff into red and green lines
+	//Separates diff into red and green lines
 	var redBuffer bytes.Buffer
 	var greenBuffer bytes.Buffer
 	for _, diff := range diffs {
@@ -363,7 +365,7 @@ func RemoveDuplicateValues(intSlice []string) []string {
 	return list
 }
 
-func DiffHelper(configCtx *ConfigContext, config bool) {
+func DiffHelper(configCtx *config.ConfigContext, config bool) {
 	fileIndex := 0
 	keys := []string{}
 	configCtx.Mutex.Lock()
@@ -422,7 +424,7 @@ func DiffHelper(configCtx *ConfigContext, config bool) {
 
 	if config {
 		//Make fileList
-		for key, _ := range configCtx.ResultMap {
+		for key := range configCtx.ResultMap {
 			found := false
 			keySplit := strings.Split(key, "||")
 

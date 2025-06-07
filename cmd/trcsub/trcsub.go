@@ -13,6 +13,9 @@ import (
 	"github.com/trimble-oss/tierceron/buildopts/tcopts"
 	"github.com/trimble-oss/tierceron/buildopts/xencryptopts"
 	"github.com/trimble-oss/tierceron/pkg/cli/trcsubbase"
+	"github.com/trimble-oss/tierceron/pkg/core"
+	"github.com/trimble-oss/tierceron/pkg/core/cache"
+	"github.com/trimble-oss/tierceron/pkg/utils/config"
 )
 
 // Reads in template files in specified directory
@@ -31,18 +34,23 @@ func main() {
 	tcopts.NewOptionsBuilder(tcopts.LoadOptions())
 	xencryptopts.NewOptionsBuilder(xencryptopts.LoadOptions())
 
-	fmt.Println("Version: " + "1.26")
+	trcsubbase.PrintVersion()
 	flagset := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	flagset.Usage = func() {
 		fmt.Fprintf(flagset.Output(), "Usage of %s:\n", os.Args[0])
 		flagset.PrintDefaults()
 	}
 	envPtr := flagset.String("env", "dev", "Environment to configure")
-	addrPtr := flagset.String("addr", "", "API endpoint for the vault")
-	secretIDPtr := flagset.String("secretID", "", "Secret for app role ID")
-	appRoleIDPtr := flagset.String("appRoleID", "", "Public app role ID")
+	tokenNamePtr := flagset.String("tokenName", "", "Token name used by this "+coreopts.BuildOptions.GetFolderPrefix(nil)+"pub to access the vault")
 
-	err := trcsubbase.CommonMain(envPtr, addrPtr, nil, secretIDPtr, appRoleIDPtr, flagset, os.Args, nil)
+	driverConfig := config.DriverConfig{
+		CoreConfig: &core.CoreConfig{
+			ExitOnFailure: true,
+			TokenCache:    cache.NewTokenCacheEmpty(),
+		},
+	}
+
+	err := trcsubbase.CommonMain(envPtr, nil, tokenNamePtr, flagset, os.Args, &driverConfig)
 	if err != nil {
 		os.Exit(1)
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
@@ -13,6 +14,9 @@ import (
 	"github.com/trimble-oss/tierceron/buildopts/tcopts"
 	"github.com/trimble-oss/tierceron/buildopts/xencryptopts"
 	trcinitbase "github.com/trimble-oss/tierceron/pkg/cli/trcinitbase"
+	"github.com/trimble-oss/tierceron/pkg/core"
+	"github.com/trimble-oss/tierceron/pkg/core/cache"
+	"github.com/trimble-oss/tierceron/pkg/utils/config"
 )
 
 // This assumes that the vault is completely new, and should only be run for the purpose
@@ -29,8 +33,22 @@ func main() {
 	tcopts.NewOptionsBuilder(tcopts.LoadOptions())
 	xencryptopts.NewOptionsBuilder(xencryptopts.LoadOptions())
 
-	fmt.Println("Version: " + "1.6")
+	trcinitbase.PrintVersion()
+	flagset := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	flagset.Usage = func() {
+		fmt.Fprintf(flagset.Output(), "Usage of %s:\n", os.Args[0])
+		flagset.PrintDefaults()
+	}
 	env := "local"
 	addr := coreopts.BuildOptions.GetVaultHostPort()
-	trcinitbase.CommonMain(&env, &addr, nil, nil, os.Args)
+	tokenPtr := flagset.String("token", "", "Vault access token, only use if in dev mode or reseeding")
+	uploadCertPtr := flagset.Bool("certs", false, "Upload certs if provided")
+	driverConfig := config.DriverConfig{
+		CoreConfig: &core.CoreConfig{
+			TokenCache:    cache.NewTokenCache(fmt.Sprintf("config_token_%s_unrestricted", env), tokenPtr, &addr),
+			ExitOnFailure: true,
+		},
+	}
+
+	trcinitbase.CommonMain(&env, nil, nil, uploadCertPtr, flagset, os.Args, &driverConfig)
 }

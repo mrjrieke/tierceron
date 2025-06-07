@@ -8,6 +8,7 @@ import (
 
 	"github.com/trimble-oss/tierceron/pkg/core"
 	eUtils "github.com/trimble-oss/tierceron/pkg/utils"
+	"github.com/trimble-oss/tierceron/pkg/utils/config"
 	pb "github.com/trimble-oss/tierceron/trcweb/rpc/apinator"
 )
 
@@ -16,14 +17,14 @@ func main() {
 	apiClient := pb.NewEnterpriseServiceBrokerProtobufClient(*addrPtr, &http.Client{})
 
 	makeVaultReq := &pb.GetValuesReq{}
-	driverConfig := &eUtils.DriverConfig{
-		CoreConfig: core.CoreConfig{
+	driverConfig := &config.DriverConfig{
+		CoreConfig: &core.CoreConfig{
 			ExitOnFailure: true,
 		},
 	}
 
 	vault, err := apiClient.GetValues(context.Background(), makeVaultReq)
-	eUtils.CheckError(&driverConfig.CoreConfig, err, true)
+	eUtils.CheckError(driverConfig.CoreConfig, err, true)
 
 	fmt.Printf("Vault: \n")
 	for _, env := range vault.Envs {

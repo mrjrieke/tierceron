@@ -11,11 +11,11 @@ import (
 	"runtime/debug"
 	"strings"
 
+	prod "github.com/trimble-oss/tierceron-core/v2/prod"
 	"github.com/trimble-oss/tierceron/atrium/buildopts/flowcoreopts"
 	"github.com/trimble-oss/tierceron/atrium/buildopts/flowopts"
 	"github.com/trimble-oss/tierceron/atrium/buildopts/localopts"
 	"github.com/trimble-oss/tierceron/atrium/vestibulum/trcdb/factory"
-	"github.com/trimble-oss/tierceron/atrium/vestibulum/trcdb/opts/prod"
 	"github.com/trimble-oss/tierceron/atrium/vestibulum/trcflow/flumen"
 	"github.com/trimble-oss/tierceron/buildopts"
 	"github.com/trimble-oss/tierceron/buildopts/coreopts"
@@ -77,7 +77,7 @@ func main() {
 		}
 	}()
 
-	factory.Init(buildopts.BuildOptions.ProcessPluginEnvConfig, flumen.ProcessFlows, true, logger)
+	factory.Init(buildopts.BuildOptions.ProcessPluginEnvConfig, flumen.BootFlowMachine, true, logger)
 	memprotectopts.MemProtectInit(logger)
 
 	apiClientMeta := api.PluginAPIClientMeta{}

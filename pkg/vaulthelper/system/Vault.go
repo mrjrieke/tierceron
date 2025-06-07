@@ -25,14 +25,14 @@ type Vault struct {
 
 // KeyTokenWrapper Contains the unseal keys and root token
 type KeyTokenWrapper struct {
-	Keys  []string // Base 64 encoded keys
-	Token string   // Root token for the vault
+	Keys     []string // Base 64 encoded keys
+	TokenPtr *string  // Root token for the vault
 }
 
 // NewVault Constructs a new vault at the given address with the given access token
-func NewVault(insecure bool, address string, env string, newVault bool, pingVault bool, scanVault bool, logger *log.Logger) (*Vault, error) {
+func NewVault(insecure bool, addressPtr *string, env string, newVault bool, pingVault bool, scanVault bool, logger *log.Logger) (*Vault, error) {
 	return NewVaultWithNonlocal(insecure,
-		address,
+		addressPtr,
 		env,
 		newVault,
 		pingVault,
@@ -42,23 +42,23 @@ func NewVault(insecure bool, address string, env string, newVault bool, pingVaul
 }
 
 // NewVault Constructs a new vault at the given address with the given access token allowing insecure for non local.
-func NewVaultWithNonlocal(insecure bool, address string, env string, newVault bool, pingVault bool, scanVault bool, allowNonLocal bool, logger *log.Logger) (*Vault, error) {
+func NewVaultWithNonlocal(insecure bool, addressPtr *string, env string, newVault bool, pingVault bool, scanVault bool, allowNonLocal bool, logger *log.Logger) (*Vault, error) {
 	var httpClient *http.Client
 	var err error
 
 	if allowNonLocal {
-		httpClient, err = helperkv.CreateHTTPClientAllowNonLocal(insecure, address, env, scanVault, true)
+		httpClient, err = helperkv.CreateHTTPClientAllowNonLocal(insecure, *addressPtr, env, scanVault, true)
 	} else {
-		httpClient, err = helperkv.CreateHTTPClient(insecure, address, env, scanVault)
+		httpClient, err = helperkv.CreateHTTPClient(insecure, *addressPtr, env, scanVault)
 	}
 
 	if err != nil {
-		logger.Println("Connection to vault couldn't be made - vaultHost: " + address)
+		logger.Println("Connection to vault couldn't be made - vaultHost: " + *addressPtr)
 		return nil, err
 	}
-	client, err := api.NewClient(&api.Config{Address: address, HttpClient: httpClient})
+	client, err := api.NewClient(&api.Config{Address: *addressPtr, HttpClient: httpClient})
 	if err != nil {
-		logger.Println("vaultHost: " + address)
+		logger.Println("vaultHost: " + *addressPtr)
 		return nil, err
 	}
 
@@ -74,7 +74,7 @@ func NewVaultWithNonlocal(insecure bool, address string, env string, newVault bo
 	}
 
 	if !newVault && health.Sealed {
-		return nil, errors.New("Vault is sealed at " + address)
+		return nil, errors.New("Vault is sealed at " + *addressPtr)
 	}
 
 	return &Vault{
@@ -111,13 +111,14 @@ func (v *Vault) RefreshClient() error {
 }
 
 // SetToken Stores the access token for this vault
-func (v *Vault) SetToken(token string) {
-	v.client.SetToken(token)
+func (v *Vault) SetToken(token *string) {
+	v.client.SetToken(*token)
 }
 
 // GetToken Fetches current token from client
-func (v *Vault) GetToken() string {
-	return v.client.Token()
+func (v *Vault) GetToken() *string {
+	token := v.client.Token()
+	return &token
 }
 
 // GetTokenInfo fetches data regarding this token
@@ -146,7 +147,11 @@ func (v *Vault) RenewSelf(increment int) error {
 }
 
 // GetOrRevokeTokensInScope()
-func (v *Vault) GetOrRevokeTokensInScope(dir string, tokenFilter string, tokenExpiration bool, logger *log.Logger) error {
+func (v *Vault) GetOrRevokeTokensInScope(dir string,
+	tokenFileFiltersSet map[string]bool,
+	tokenExpiration bool,
+	doTidy bool,
+	logger *log.Logger) error {
 	var tokenPath = dir
 	var tokenPolicies = []string{}
 
@@ -159,10 +164,20 @@ func (v *Vault) GetOrRevokeTokensInScope(dir string, tokenFilter string, tokenEx
 		if f.IsDir() {
 			continue
 		}
-		if tokenFilter != "" && !strings.HasPrefix(f.Name(), tokenFilter) {
-			// Token doesn't match filter...  Skipping.
-			continue
+		if len(tokenFileFiltersSet) > 0 {
+			found := false
+
+			for tokenFilter, _ := range tokenFileFiltersSet {
+				if strings.HasPrefix(f.Name(), tokenFilter) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
 		}
+
 		var file, err = os.OpenFile(tokenPath+string(os.PathSeparator)+f.Name(), os.O_RDWR, 0644)
 		if file != nil {
 			defer file.Close()
@@ -176,6 +191,7 @@ func (v *Vault) GetOrRevokeTokensInScope(dir string, tokenFilter string, tokenEx
 		yaml.Unmarshal(byteValue, &token)
 		tokenPolicies = append(tokenPolicies, token.Policies...)
 	}
+
 	r := v.client.NewRequest("LIST", "/v1/auth/token/accessors")
 	response, err := v.client.RawRequest(r)
 
@@ -278,7 +294,7 @@ func (v *Vault) GetOrRevokeTokensInScope(dir string, tokenFilter string, tokenEx
 				}
 			}
 
-			if !tokenExpiration {
+			if !tokenExpiration && (doTidy || len(tokenFileFiltersSet) == 0) {
 				b := v.client.NewRequest("POST", "/v1/auth/token/tidy")
 				response, err := v.client.RawRequest(b)
 				if response != nil && response.Body != nil {
@@ -336,7 +352,7 @@ func (v *Vault) InitVault(keyShares int, keyThreshold int) (*KeyTokenWrapper, er
 		return nil, err
 	}
 	// Remove for deployment
-	fmt.Println("Vault succesfully Init'd")
+	fmt.Println("Vault successfully Init'd")
 	fmt.Println("=========================")
 	for _, key := range response.KeysB64 {
 		fmt.Printf("Unseal key: %s\n", key)
@@ -344,8 +360,8 @@ func (v *Vault) InitVault(keyShares int, keyThreshold int) (*KeyTokenWrapper, er
 	fmt.Printf("Root token: %s\n\n", response.RootToken)
 
 	keyToken := KeyTokenWrapper{
-		Keys:  response.KeysB64,
-		Token: response.RootToken}
+		Keys:     response.KeysB64,
+		TokenPtr: &response.RootToken}
 
 	return &keyToken, nil
 }

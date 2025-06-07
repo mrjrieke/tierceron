@@ -2,14 +2,21 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 
+	flowcore "github.com/trimble-oss/tierceron-core/v2/flow"
+	coreutil "github.com/trimble-oss/tierceron-core/v2/util"
+
+	"github.com/trimble-oss/tierceron/atrium/buildopts/flowopts"
 	"github.com/trimble-oss/tierceron/atrium/buildopts/testopts"
 	trcflow "github.com/trimble-oss/tierceron/atrium/vestibulum/trcflow/flumen"
+	"github.com/trimble-oss/tierceron/buildopts/harbingeropts"
 	"github.com/trimble-oss/tierceron/buildopts/memonly"
 	"github.com/trimble-oss/tierceron/buildopts/memprotectopts"
 	"github.com/trimble-oss/tierceron/pkg/core"
+	"github.com/trimble-oss/tierceron/pkg/core/cache"
 	eUtils "github.com/trimble-oss/tierceron/pkg/utils"
 )
 
@@ -27,12 +34,17 @@ func main() {
 	logger := log.New(f, "[trcdbplugin]", log.LstdFlags)
 	eUtils.CheckError(&core.CoreConfig{ExitOnFailure: true, Log: logger}, err, true)
 
-	pluginConfig := testopts.BuildOptions.GetTestConfig(*tokenPtr, false)
-	pluginConfig["address"] = ""
-	pluginConfig["vaddress"] = ""
-	pluginConfig["caddress"] = ""
-	pluginConfig["token"] = ""
-	pluginConfig["ctoken"] = ""
+	pluginConfig := testopts.BuildOptions.GetTestConfig(tokenPtr, false)
+	pluginConfig["address"] = os.Getenv("VAULT_ADDR")
+	pluginConfig["vaddress"] = os.Getenv("VAULT_ADDR")
+	pluginConfig["caddress"] = os.Getenv("VAULT_ADDR")
+	if eUtils.RefLength(tokenPtr) > 0 {
+		pluginConfig["tokenptr"] = tokenPtr
+		pluginConfig["ctokenptr"] = tokenPtr
+	} else {
+		pluginConfig["tokenptr"] = os.Getenv("VAULT_TOKEN")
+		pluginConfig["ctokenptr"] = pluginConfig["tokenptr"]
+	}
 	pluginConfig["env"] = "dev"
 	pluginConfig["insecure"] = true
 
@@ -48,8 +60,38 @@ func main() {
 			}
 		}
 	}
+	flowMachineInitContext := flowcore.FlowMachineInitContext{
+		FlowMachineInterfaceConfigs: map[string]interface{}{},
+		GetDatabaseName:             harbingeropts.BuildOptions.GetDatabaseName,
+		GetTableFlows: func() []flowcore.FlowDefinition {
+			tableFlows := []flowcore.FlowDefinition{}
+			for _, template := range pluginConfig["templatePath"].([]string) {
+				flowSource, service, _, tableTemplateName := coreutil.GetProjectService("", "trc_templates", template)
+				tableName := coreutil.GetTemplateFileName(tableTemplateName, service)
+				tableFlows = append(tableFlows, flowcore.FlowDefinition{
+					FlowName:         flowcore.FlowNameType(tableName),
+					FlowTemplatePath: template,
+					FlowSource:       flowSource,
+				})
+			}
+			return tableFlows
+		},
+		GetBusinessFlows:    flowopts.BuildOptions.GetAdditionalFlows,
+		GetTestFlows:        testopts.BuildOptions.GetAdditionalTestFlows,
+		GetTestFlowsByState: flowopts.BuildOptions.GetAdditionalFlowsByState,
+		FlowController:      flowopts.BuildOptions.ProcessFlowController,
+		TestFlowController:  testopts.BuildOptions.ProcessTestFlowController,
+	}
+	currentTokenName := fmt.Sprintf("config_token_%s_unrestricted", pluginConfig["env"])
+	tokenCache := cache.NewTokenCache(currentTokenName, eUtils.RefMap(pluginConfig, "tokenptr"), eUtils.RefMap(pluginConfig, "vaddress"))
 
-	trcflow.ProcessFlows(pluginConfig, logger)
+	driverConfig, err := eUtils.InitDriverConfigForPlugin(pluginConfig, tokenCache, currentTokenName, logger)
+	if err != nil {
+		fmt.Printf("Error initializing driver config: %v\n", err)
+		os.Exit(1)
+	}
+
+	trcflow.BootFlowMachine(&flowMachineInitContext, driverConfig, pluginConfig, logger)
 	wait := make(chan bool)
 	<-wait
 }

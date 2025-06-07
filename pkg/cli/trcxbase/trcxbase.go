@@ -1,7 +1,6 @@
 package trcxbase
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -11,23 +10,23 @@ import (
 	"time"
 
 	"github.com/trimble-oss/tierceron/buildopts/coreopts"
-	"github.com/trimble-oss/tierceron/buildopts/memonly"
-	"github.com/trimble-oss/tierceron/buildopts/memprotectopts"
 	"github.com/trimble-oss/tierceron/pkg/core"
+	"github.com/trimble-oss/tierceron/pkg/core/cache"
 	eUtils "github.com/trimble-oss/tierceron/pkg/utils"
+	"github.com/trimble-oss/tierceron/pkg/utils/config"
 	"github.com/trimble-oss/tierceron/pkg/vaulthelper/kv"
 
 	"github.com/hashicorp/vault/api"
 )
 
-func messenger(configCtx *eUtils.ConfigContext, inData *string, inPath string) {
-	var data eUtils.ResultData
+func messenger(configCtx *config.ConfigContext, inData *string, inPath string) {
+	var data config.ResultData
 	data.InData = inData
 	data.InPath = inPath
 	configCtx.ResultChannel <- &data
 }
 
-func receiver(configCtx *eUtils.ConfigContext) {
+func receiver(configCtx *config.ConfigContext) {
 	for {
 		select {
 		case data := <-configCtx.ResultChannel:
@@ -42,8 +41,8 @@ func receiver(configCtx *eUtils.ConfigContext) {
 
 // CommonMain This executable automates the creation of seed files from template file(s).
 // New seed files are written (or overwrite current seed files) to the specified directory.
-func CommonMain(ctx eUtils.ProcessContext,
-	configDriver eUtils.ConfigDriver,
+func CommonMain(ctx config.ProcessContext,
+	configDriver config.ConfigDriver,
 	envPtr *string,
 	addrPtrIn *string,
 	envCtxPtr *string,
@@ -60,7 +59,7 @@ func CommonMain(ctx eUtils.ProcessContext,
 		flagset.String("env", "dev", "Environment to configure")
 	}
 	addrPtr := flagset.String("addr", "", "API endpoint for the vault")
-	if addrPtrIn != nil && *addrPtrIn != "" {
+	if eUtils.RefLength(addrPtrIn) > 0 {
 		addrPtr = addrPtrIn
 	}
 
@@ -78,7 +77,7 @@ func CommonMain(ctx eUtils.ProcessContext,
 	noVaultPtr := flagset.Bool("novault", false, "Don't pull configuration data from vault.")
 	pingPtr := flagset.Bool("ping", false, "Ping vault.")
 
-	fileAddrPtr := flagset.String("seedpath", "", "Path for seed file")
+	seedPathPtr := flagset.String("seedpath", "", "Path for seed file")
 	fieldsPtr := flagset.String("fields", "", "Fields to enter")
 	encryptedPtr := flagset.String("encrypted", "", "Fields to encrypt")
 	readOnlyPtr := flagset.Bool("readonly", false, "Fields to encrypt")
@@ -96,8 +95,6 @@ func CommonMain(ctx eUtils.ProcessContext,
 	wantCertsPtr := flagset.Bool("certs", false, "Pull certificates into directory specified by endDirPtr")
 	filterTemplatePtr := flagset.String("templateFilter", "", "Specifies which templates to filter") // -templateFilter=config.yml
 
-	eUtils.CheckInitFlags(flagset)
-
 	// Checks for proper flag input
 	args := argLines[1:]
 	for i := 0; i < len(args); i++ {
@@ -108,22 +105,33 @@ func CommonMain(ctx eUtils.ProcessContext,
 		}
 	}
 
-	flagset.Parse(argLines[1:])
-	configCtx := &eUtils.ConfigContext{
+	eUtils.CheckInitFlags(flagset, argLines[1:])
+
+	configCtx := &config.ConfigContext{
 		ResultMap:            make(map[string]*string),
 		EnvSlice:             make([]string, 0),
 		ProjectSectionsSlice: make([]string, 0),
-		ResultChannel:        make(chan *eUtils.ResultData, 5),
+		ResultChannel:        make(chan *config.ResultData, 5),
 		FileSysIndex:         -1,
 		ConfigWg:             sync.WaitGroup{},
 		Mutex:                &sync.Mutex{},
 	}
+	if envPtr == nil {
+		env := "dev"
+		envPtr = &env
+	}
+	envBasis := eUtils.GetEnvBasis(*envPtr)
 
-	driverConfig := &eUtils.DriverConfig{
-		CoreConfig: core.CoreConfig{
+	if eUtils.RefLength(tokenNamePtr) == 0 && eUtils.RefLength(tokenPtr) > 0 {
+		tokenName := fmt.Sprintf("config_token_%s", envBasis)
+		tokenNamePtr = &tokenName
+	}
+	driverConfigBase := &config.DriverConfig{
+		CoreConfig: &core.CoreConfig{
+			Insecure:      *insecurePtr,
+			TokenCache:    cache.NewTokenCache(*tokenNamePtr, tokenPtr, addrPtr),
 			ExitOnFailure: true,
 		},
-		Insecure: *insecurePtr,
 	}
 
 	// Initialize logging
@@ -132,11 +140,9 @@ func CommonMain(ctx eUtils.ProcessContext,
 		// Terminate logging
 		defer f.Close()
 	}
-	eUtils.CheckError(&driverConfig.CoreConfig, err, true)
+	eUtils.CheckError(driverConfigBase.CoreConfig, err, true)
 	logger := log.New(f, "["+coreopts.BuildOptions.GetFolderPrefix(nil)+"x]", log.LstdFlags)
-	driverConfig.CoreConfig.Log = logger
-
-	envRaw := *envPtr
+	driverConfigBase.CoreConfig.Log = logger
 
 	Yellow := "\033[33m"
 	Reset := "\033[0m"
@@ -174,10 +180,10 @@ func CommonMain(ctx eUtils.ProcessContext,
 	} else if (strings.HasPrefix(*envPtr, "staging") || strings.HasPrefix(*envPtr, "prod")) && *addrPtr == "" {
 		fmt.Println("The -addr flag must be used with staging/prod environment")
 		os.Exit(1)
-	} else if (len(*fieldsPtr) == 0) && len(*fileAddrPtr) != 0 {
+	} else if (len(*fieldsPtr) == 0) && len(*seedPathPtr) != 0 {
 		fmt.Println("The -fields flag must be used with -seedPath flag; -encrypted flag is optional")
 		os.Exit(1)
-	} else if *readOnlyPtr && (len(*encryptedPtr) == 0 || len(*fileAddrPtr) == 0) {
+	} else if *readOnlyPtr && (len(*encryptedPtr) == 0 || len(*seedPathPtr) == 0) {
 		fmt.Println("The -encrypted flag must be used with -seedPath flag if -readonly is used")
 		os.Exit(1)
 	} else {
@@ -200,42 +206,15 @@ func CommonMain(ctx eUtils.ProcessContext,
 
 	trcxe := false
 	sectionSlice := []string{""}
-	if len(*fileAddrPtr) != 0 { //Checks if seed file exists & figured out if index/restricted
+	if len(*seedPathPtr) != 0 { //Checks if seed file exists & figured out if index/restricted
 		trcxe = true
-		directorySplit := strings.Split(*fileAddrPtr, "/")
-		indexed := false
-		if !*noVaultPtr {
-			pwd, _ := os.Getwd()
-			fileIndex, fileErr := os.Open(pwd + "/" + coreopts.BuildOptions.GetFolderPrefix(nil) + "_seeds/" + *envPtr + "/Index/" + *fileAddrPtr + "_seed.yml")
-			if fileIndex != nil {
-				defer fileIndex.Close()
-			}
-			if errors.Is(fileErr, os.ErrNotExist) {
-				fileRestricted, fileRErr := os.Open(pwd + "/" + coreopts.BuildOptions.GetFolderPrefix(nil) + "_seeds/" + *envPtr + "/Restricted/" + *fileAddrPtr + "_seed.yml")
-				if fileRestricted != nil {
-					defer fileRestricted.Close()
-				}
-				if errors.Is(fileRErr, os.ErrNotExist) {
-					fmt.Println("Specified seed file could not be found.")
-					os.Exit(1)
-				}
-			} else {
-				indexed = true
-			}
-		} else {
-			indexed = true
-		}
+		directorySplit := strings.Split(*seedPathPtr, "/")
 
-		if indexed {
-			if len(directorySplit) >= 3 { //Don't like this, will change later
-				*eUtils.IndexedPtr = directorySplit[0]
-				*eUtils.IndexNameFilterPtr = directorySplit[1]
-				*eUtils.IndexValueFilterPtr = directorySplit[2]
-				sectionSlice = strings.Split(*eUtils.IndexValueFilterPtr, ",")
-			}
-		} else {
-			fmt.Println("Not supported for restricted section.")
-			os.Exit(1)
+		if len(directorySplit) >= 3 { //Don't like this, will change later
+			*eUtils.IndexedPtr = directorySplit[0]
+			*eUtils.IndexNameFilterPtr = directorySplit[1]
+			*eUtils.IndexValueFilterPtr = directorySplit[2]
+			sectionSlice = strings.Split(*eUtils.IndexValueFilterPtr, ",")
 		}
 	}
 
@@ -292,11 +271,17 @@ func CommonMain(ctx eUtils.ProcessContext,
 		envVersion := strings.Split(*envPtr, "_") //Break apart env+version for token
 		*envPtr = envVersion[0]
 		if !*noVaultPtr {
-			autoErr := eUtils.AutoAuth(driverConfig, secretIDPtr, appRoleIDPtr, tokenPtr, tokenNamePtr, envPtr, addrPtr, envCtxPtr, "", *pingPtr)
+			roleEntityPtr := new(string)
+			autoErr := eUtils.AutoAuth(driverConfigBase,
+				tokenNamePtr,
+				&tokenPtr,
+				envPtr,
+				envCtxPtr,
+				roleEntityPtr, *pingPtr)
 
 			if autoErr != nil {
 				fmt.Println("Auth failure: " + autoErr.Error())
-				eUtils.LogErrorMessage(&driverConfig.CoreConfig, autoErr.Error(), true)
+				eUtils.LogErrorMessage(driverConfigBase.CoreConfig, autoErr.Error(), true)
 			}
 		} else {
 			*tokenPtr = "novault"
@@ -311,11 +296,6 @@ func CommonMain(ctx eUtils.ProcessContext,
 		} else {
 			*envPtr = envVersion[0] + "_0"
 		}
-	}
-
-	if memonly.IsMemonly() {
-		memprotectopts.MemUnprotectAll(nil)
-		memprotectopts.MemProtect(nil, tokenPtr)
 	}
 
 	//Duplicate env check
@@ -356,6 +336,9 @@ skipDiff:
 	}
 
 	regions := []string{}
+	appRole := []string{*appRoleIDPtr, *secretIDPtr}
+	driverConfigBase.CoreConfig.TokenCache.AddRole("bamboo", &appRole)
+	driverConfigBase.CoreConfig.TokenCache.SetVaultAddress(addrPtr)
 
 	if len(configCtx.EnvSlice) == 1 && !*noVaultPtr {
 		if strings.HasPrefix(*envPtr, "staging") || strings.HasPrefix(*envPtr, "prod") {
@@ -365,21 +348,24 @@ skipDiff:
 		if strings.HasPrefix(*envPtr, "staging") || strings.HasPrefix(*envPtr, "prod") || strings.HasPrefix(*envPtr, "dev") {
 			regions = eUtils.GetSupportedProdRegions()
 		}
-		autoErr := eUtils.AutoAuth(&eUtils.DriverConfig{
-			CoreConfig: core.CoreConfig{
+		roleEntityPtr := new(string)
+
+		autoErr := eUtils.AutoAuth(&config.DriverConfig{
+			CoreConfig: &core.CoreConfig{
 				ExitOnFailure: true,
+				TokenCache:    driverConfigBase.CoreConfig.TokenCache,
+				Insecure:      *insecurePtr,
 				Log:           logger,
 			},
-			Insecure: *insecurePtr,
-		}, secretIDPtr, appRoleIDPtr, tokenPtr, tokenNamePtr, envPtr, addrPtr, envCtxPtr, "", *pingPtr)
+		}, tokenNamePtr, &tokenPtr, envPtr, envCtxPtr, roleEntityPtr, *pingPtr)
 		if autoErr != nil {
 			fmt.Println("Missing auth components.")
-			eUtils.LogErrorMessage(&driverConfig.CoreConfig, autoErr.Error(), true)
+			eUtils.LogErrorMessage(driverConfigBase.CoreConfig, autoErr.Error(), true)
 		}
 	}
 
-	if (tokenPtr == nil || *tokenPtr == "") && !*noVaultPtr && len(configCtx.EnvSlice) == 1 {
-		fmt.Println("Missing required auth token.")
+	if len(configCtx.EnvSlice) == 1 && (eUtils.RefLength(driverConfigBase.CoreConfig.TokenCache.GetToken(fmt.Sprintf("config_token_%s", envBasis))) == 0) && !*noVaultPtr {
+		fmt.Printf("Missing required auth token for env: %s\n", envBasis)
 		os.Exit(1)
 	}
 
@@ -387,7 +373,7 @@ skipDiff:
 		var err error
 		*envPtr, err = eUtils.LoginToLocal()
 		fmt.Println(*envPtr)
-		eUtils.CheckError(&driverConfig.CoreConfig, err, true)
+		eUtils.CheckError(driverConfigBase.CoreConfig, err, true)
 	}
 
 	logger.Println("=============== Initializing Seed Generator ===============")
@@ -425,17 +411,20 @@ skipDiff:
 				} else {
 					baseEnv = configCtx.EnvSlice[0]
 				}
-				if !*noVaultPtr && *tokenPtr == "" {
+				if !*noVaultPtr && eUtils.RefLength(driverConfigBase.CoreConfig.TokenCache.GetToken(fmt.Sprintf("config_token_%s", envBasis))) == 0 {
 					//Ask vault for list of dev.<id>.* environments, add to envSlice
-					authErr := eUtils.AutoAuth(&eUtils.DriverConfig{
-						CoreConfig: core.CoreConfig{
+					roleEntityPtr := new(string)
+
+					authErr := eUtils.AutoAuth(&config.DriverConfig{
+						CoreConfig: &core.CoreConfig{
 							ExitOnFailure: true,
+							TokenCache:    driverConfigBase.CoreConfig.TokenCache,
+							Insecure:      *insecurePtr,
 							Log:           logger,
 						},
-						Insecure: *insecurePtr,
-					}, secretIDPtr, appRoleIDPtr, tokenPtr, tokenNamePtr, &baseEnv, addrPtr, envCtxPtr, "", *pingPtr)
+					}, tokenNamePtr, &tokenPtr, &baseEnv, envCtxPtr, roleEntityPtr, *pingPtr)
 					if authErr != nil {
-						eUtils.LogErrorMessage(&driverConfig.CoreConfig, "Auth failure: "+authErr.Error(), true)
+						eUtils.LogErrorMessage(driverConfigBase.CoreConfig, "Auth failure: "+authErr.Error(), true)
 					}
 				}
 			}
@@ -446,25 +435,32 @@ skipDiff:
 
 			recursivePathBuilder = func(testMod *kv.Modifier, pGen string, dynamicPathParts []string) {
 				if len(dynamicPathParts) == 0 {
-					if !*noVaultPtr && *tokenPtr == "" {
-						authErr := eUtils.AutoAuth(&eUtils.DriverConfig{
-							CoreConfig: core.CoreConfig{
-								ExitOnFailure: true,
-								Log:           logger,
+					if !*noVaultPtr && eUtils.RefLength(driverConfigBase.CoreConfig.TokenCache.GetToken(fmt.Sprintf("config_token_%s", envBasis))) == 0 {
+						appconfigrolePtr := new(string)
+
+						authErr := eUtils.AutoAuth(&config.DriverConfig{
+							CoreConfig: &core.CoreConfig{
+								ExitOnFailure:       true,
+								CurrentTokenNamePtr: driverConfigBase.CoreConfig.CurrentTokenNamePtr,
+								TokenCache:          driverConfigBase.CoreConfig.TokenCache,
+								Insecure:            *insecurePtr,
+								Log:                 logger,
 							},
-							Insecure: *insecurePtr,
-						}, secretIDPtr, appRoleIDPtr, tokenPtr, tokenNamePtr, envPtr, addrPtr, envCtxPtr, "", *pingPtr)
+						}, tokenNamePtr, &tokenPtr, envPtr, envCtxPtr, appconfigrolePtr, *pingPtr)
 						if authErr != nil {
 							// Retry once.
-							authErr := eUtils.AutoAuth(&eUtils.DriverConfig{
-								CoreConfig: core.CoreConfig{
-									ExitOnFailure: true,
-									Log:           logger,
+
+							authErr := eUtils.AutoAuth(&config.DriverConfig{
+								CoreConfig: &core.CoreConfig{
+									ExitOnFailure:       true,
+									CurrentTokenNamePtr: driverConfigBase.CoreConfig.CurrentTokenNamePtr,
+									TokenCache:          driverConfigBase.CoreConfig.TokenCache,
+									Insecure:            *insecurePtr,
+									Log:                 logger,
 								},
-								Insecure: *insecurePtr,
-							}, secretIDPtr, appRoleIDPtr, tokenPtr, tokenNamePtr, envPtr, addrPtr, envCtxPtr, "", *pingPtr)
+							}, tokenNamePtr, &tokenPtr, envPtr, envCtxPtr, appconfigrolePtr, *pingPtr)
 							if authErr != nil {
-								eUtils.LogAndSafeExit(&driverConfig.CoreConfig, fmt.Sprintf("Unexpected auth error %v ", authErr), 1)
+								eUtils.LogAndSafeExit(driverConfigBase.CoreConfig, fmt.Sprintf("Unexpected auth error %v ", authErr), 1)
 							}
 						}
 					} else if *tokenPtr == "" {
@@ -476,20 +472,20 @@ skipDiff:
 						*envPtr = envVersion[0] + "_0"
 					}
 
-					driverConfig := &eUtils.DriverConfig{
-						CoreConfig: core.CoreConfig{
-							WantCerts:         *wantCertsPtr,
-							DynamicPathFilter: pGen,
-							ExitOnFailure:     true,
-							Log:               logger,
+					driverConfig := &config.DriverConfig{
+						CoreConfig: &core.CoreConfig{
+							WantCerts:           *wantCertsPtr,
+							Insecure:            *insecurePtr,
+							CurrentTokenNamePtr: driverConfigBase.CoreConfig.CurrentTokenNamePtr,
+							TokenCache:          driverConfigBase.CoreConfig.TokenCache,
+							EnvBasis:            envBasis,
+							Env:                 *envPtr,
+							Regions:             regions,
+							DynamicPathFilter:   pGen,
+							ExitOnFailure:       true,
+							Log:                 logger,
 						},
 						Context:       ctx,
-						Insecure:      *insecurePtr,
-						Token:         *tokenPtr,
-						VaultAddress:  *addrPtr,
-						EnvRaw:        envRaw,
-						Env:           *envPtr,
-						Regions:       regions,
 						SecretMode:    *secretMode,
 						StartDir:      append([]string{}, *startDirPtr),
 						EndDir:        *endDirPtr,
@@ -503,9 +499,9 @@ skipDiff:
 						Trcxr:         *readOnlyPtr,
 					}
 					waitg.Add(1)
-					go func(dc *eUtils.DriverConfig) {
+					go func(dc *config.DriverConfig) {
 						defer waitg.Done()
-						eUtils.ConfigControl(ctx, configCtx, dc, configDriver)
+						config.ConfigControl(ctx, configCtx, dc, configDriver)
 					}(driverConfig)
 					return
 				}
@@ -513,17 +509,17 @@ skipDiff:
 				for i, dynamicPart := range dynamicPathParts {
 					if dynamicPart == "%s" {
 						if testMod == nil {
-							testMod, err = kv.NewModifier(*insecurePtr, *tokenPtr, *addrPtr, baseEnv, regions, true, logger)
+							testMod, err = kv.NewModifier(*insecurePtr, tokenPtr, addrPtr, baseEnv, regions, true, logger)
 							testMod.Env = baseEnv
 							if err != nil {
-								eUtils.LogErrorMessage(&driverConfig.CoreConfig, "Access to vault failure.", true)
+								eUtils.LogErrorMessage(driverConfigBase.CoreConfig, "Access to vault failure.", true)
 							}
 						}
 
-						listValues, err := testMod.ListEnv("super-secrets/"+testMod.Env+"/"+pGen, driverConfig.CoreConfig.Log)
+						listValues, err := testMod.ListEnv("super-secrets/"+testMod.Env+"/"+pGen, driverConfigBase.CoreConfig.Log)
 						if err != nil {
 							if strings.Contains(err.Error(), "permission denied") {
-								eUtils.LogErrorMessage(&driverConfig.CoreConfig, fmt.Sprintf("Insufficient privileges accessing: %s", pGen), true)
+								eUtils.LogErrorMessage(driverConfigBase.CoreConfig, fmt.Sprintf("Insufficient privileges accessing: %s", pGen), true)
 							}
 						}
 
@@ -585,17 +581,22 @@ skipDiff:
 					} else {
 						baseEnv = configCtx.EnvSlice[0]
 					}
+					roleEntityPtr := new(string)
+
 					//Ask vault for list of dev.<id>.* environments, add to envSlice
-					authErr := eUtils.AutoAuth(&eUtils.DriverConfig{
-						CoreConfig: core.CoreConfig{
-							ExitOnFailure: true,
-							Log:           logger,
+					authErr := eUtils.AutoAuth(&config.DriverConfig{
+						CoreConfig: &core.CoreConfig{
+							ExitOnFailure:       true,
+							CurrentTokenNamePtr: driverConfigBase.CoreConfig.CurrentTokenNamePtr,
+							TokenCache:          cache.NewTokenCache(fmt.Sprintf("config_token_%s", baseEnv), tokenPtr, addrPtr),
+							Insecure:            *insecurePtr,
+							Log:                 logger,
 						},
-						Insecure: *insecurePtr}, secretIDPtr, appRoleIDPtr, tokenPtr, tokenNamePtr, &baseEnv, addrPtr, envCtxPtr, "", *pingPtr)
+					}, tokenNamePtr, &tokenPtr, &baseEnv, envCtxPtr, roleEntityPtr, *pingPtr)
 					if authErr != nil {
-						eUtils.LogErrorMessage(&driverConfig.CoreConfig, "Auth failure: "+authErr.Error(), true)
+						eUtils.LogErrorMessage(driverConfigBase.CoreConfig, "Auth failure: "+authErr.Error(), true)
 					}
-					testMod, err := kv.NewModifier(*insecurePtr, *tokenPtr, *addrPtr, baseEnv, regions, true, logger)
+					testMod, err := kv.NewModifier(*insecurePtr, tokenPtr, addrPtr, baseEnv, regions, true, logger)
 					testMod.Env = baseEnv
 					if err != nil {
 						logger.Printf(err.Error())
@@ -617,23 +618,23 @@ skipDiff:
 					var listValues *api.Secret
 					if len(configCtx.ProjectSectionsSlice) > 0 { //If eid -> look inside Index and grab all environments
 						subSectionPath := configCtx.ProjectSectionsSlice[0] + "/"
-						listValues, err = testMod.ListEnv("super-secrets/"+testMod.Env+sectionKey+subSectionPath, driverConfig.CoreConfig.Log)
+						listValues, err = testMod.ListEnv("super-secrets/"+testMod.Env+sectionKey+subSectionPath, driverConfigBase.CoreConfig.Log)
 						if err != nil {
 							if strings.Contains(err.Error(), "permission denied") {
-								eUtils.LogErrorMessage(&driverConfig.CoreConfig, "Attempt to access restricted section of the vault denied.", true)
+								eUtils.LogErrorMessage(driverConfigBase.CoreConfig, "Attempt to access restricted section of the vault denied.", true)
 							}
 						}
 
 						// Further path modifications needed.
 						if listValues == nil {
-							eUtils.LogAndSafeExit(&driverConfig.CoreConfig, "No available indexes found for "+subSectionPath, 1)
+							eUtils.LogAndSafeExit(driverConfigBase.CoreConfig, "No available indexes found for "+subSectionPath, 1)
 						}
 						for k, valuesPath := range listValues.Data {
 							for _, indexNameInterface := range valuesPath.([]interface{}) {
 								if indexNameInterface != (subSectionName + "/") {
 									continue
 								}
-								indexList, err := testMod.ListEnv("super-secrets/"+testMod.Env+sectionKey+subSectionPath+"/"+indexNameInterface.(string), driverConfig.CoreConfig.Log)
+								indexList, err := testMod.ListEnv("super-secrets/"+testMod.Env+sectionKey+subSectionPath+"/"+indexNameInterface.(string), driverConfigBase.CoreConfig.Log)
 								if err != nil {
 									logger.Printf(err.Error())
 								}
@@ -652,7 +653,7 @@ skipDiff:
 							delete(listValues.Data, k) //delete it so it doesn't repeat below
 						}
 					} else {
-						listValues, err = testMod.ListEnv("values/", driverConfig.CoreConfig.Log)
+						listValues, err = testMod.ListEnv("values/", driverConfigBase.CoreConfig.Log)
 					}
 					if err != nil {
 						logger.Printf(err.Error())
@@ -694,7 +695,7 @@ skipDiff:
 		}
 		if len(*eUtils.ServiceFilterPtr) > 0 {
 			if len(sectionSlice) == 0 {
-				eUtils.LogAndSafeExit(&driverConfig.CoreConfig, "No available indexes found for "+*eUtils.IndexValueFilterPtr, 1)
+				eUtils.LogAndSafeExit(driverConfigBase.CoreConfig, "No available indexes found for "+*eUtils.IndexValueFilterPtr, 1)
 			}
 			serviceFilterSlice = strings.Split(*eUtils.ServiceFilterPtr, ",")
 			if len(*eUtils.ServiceNameFilterPtr) > 0 {
@@ -708,33 +709,41 @@ skipDiff:
 		for _, env := range configCtx.EnvSlice {
 			envVersion := eUtils.SplitEnv(env)
 			*envPtr = envVersion[0]
-			if secretIDPtr != nil && *secretIDPtr != "" && appRoleIDPtr != nil && *appRoleIDPtr != "" {
-				*tokenPtr = ""
-			}
+			tokenNameEnvPtr := new(string)
 			for _, section := range sectionSlice {
 				var servicesWanted []string
-				if !*noVaultPtr && *tokenPtr == "" {
-					authErr := eUtils.AutoAuth(&eUtils.DriverConfig{
-						CoreConfig: core.CoreConfig{
-							ExitOnFailure: true,
-							Log:           logger,
+				if !*noVaultPtr {
+					roleEntityPtr := new(string)
+					*tokenNameEnvPtr = fmt.Sprintf("config_token_%s", eUtils.GetEnvBasis(*envPtr))
+
+					authErr := eUtils.AutoAuth(&config.DriverConfig{
+						CoreConfig: &core.CoreConfig{
+							ExitOnFailure:       true,
+							CurrentTokenNamePtr: tokenNameEnvPtr,
+							TokenCache:          driverConfigBase.CoreConfig.TokenCache,
+							Insecure:            *insecurePtr,
+							Log:                 logger,
 						},
-						Insecure: *insecurePtr}, secretIDPtr, appRoleIDPtr, tokenPtr, tokenNamePtr, envPtr, addrPtr, envCtxPtr, "", *pingPtr)
+					}, tokenNameEnvPtr, &tokenPtr, envPtr, envCtxPtr, roleEntityPtr, *pingPtr)
 					if authErr != nil {
 						// Retry once.
-						authErr := eUtils.AutoAuth(&eUtils.DriverConfig{
-							CoreConfig: core.CoreConfig{
-								ExitOnFailure: true,
-								Log:           logger,
+						authErr := eUtils.AutoAuth(&config.DriverConfig{
+							CoreConfig: &core.CoreConfig{
+								ExitOnFailure:       true,
+								CurrentTokenNamePtr: tokenNameEnvPtr,
+								TokenCache:          driverConfigBase.CoreConfig.TokenCache,
+								Insecure:            *insecurePtr,
+								Log:                 logger,
 							},
-							Insecure: *insecurePtr,
-						}, secretIDPtr, appRoleIDPtr, tokenPtr, tokenNamePtr, envPtr, addrPtr, envCtxPtr, "", *pingPtr)
+						}, tokenNameEnvPtr, &tokenPtr, envPtr, envCtxPtr, roleEntityPtr, *pingPtr)
 						if authErr != nil {
-							eUtils.LogAndSafeExit(&driverConfig.CoreConfig, fmt.Sprintf("Unexpected auth error %v ", authErr), 1)
+							eUtils.LogAndSafeExit(driverConfigBase.CoreConfig, fmt.Sprintf("Unexpected auth error %v ", authErr), 1)
 						}
 					}
-				} else if *tokenPtr == "" {
-					*tokenPtr = "novault"
+				} else if eUtils.RefLength(driverConfigBase.CoreConfig.TokenCache.GetToken(fmt.Sprintf("config_token_%s", envBasis))) == 0 {
+					token := "novault"
+					envBasis := eUtils.GetEnvBasis(*envPtr)
+					driverConfigBase.CoreConfig.TokenCache.AddToken(fmt.Sprintf("config_token_%s", envBasis), &token)
 				}
 				if len(envVersion) >= 2 { //Put back env+version together
 					*envPtr = envVersion[0] + "_" + envVersion[1]
@@ -752,24 +761,24 @@ skipDiff:
 						trcxeList = append(trcxeList, "new")
 					}
 				}
-				driverConfig := &eUtils.DriverConfig{
-					CoreConfig: core.CoreConfig{
-						WantCerts:         *wantCertsPtr,
-						DynamicPathFilter: *dynamicPathPtr,
-						ExitOnFailure:     true,
-						Log:               logger,
+				driverConfig := &config.DriverConfig{
+					CoreConfig: &core.CoreConfig{
+						WantCerts:           *wantCertsPtr,
+						Insecure:            *insecurePtr,
+						CurrentTokenNamePtr: tokenNameEnvPtr,
+						TokenCache:          driverConfigBase.CoreConfig.TokenCache,
+						Regions:             regions,
+						EnvBasis:            envBasis,
+						Env:                 *envPtr,
+						DynamicPathFilter:   *dynamicPathPtr,
+						ExitOnFailure:       true,
+						Log:                 logger,
 					},
 					Context:         ctx,
-					Insecure:        *insecurePtr,
-					Token:           *tokenPtr,
-					VaultAddress:    *addrPtr,
-					EnvRaw:          envRaw,
-					Env:             *envPtr,
 					SectionKey:      sectionKey,
 					SectionName:     subSectionName,
 					SubSectionValue: section,
 					SubSectionName:  *eUtils.ServiceNameFilterPtr,
-					Regions:         regions,
 					SecretMode:      *secretMode,
 					ServicesWanted:  servicesWanted,
 					StartDir:        append([]string{}, *startDirPtr),
@@ -787,9 +796,9 @@ skipDiff:
 					Trcxr:           *readOnlyPtr,
 				}
 				waitg.Add(1)
-				go func(dc *eUtils.DriverConfig) {
+				go func(dc *config.DriverConfig) {
 					defer waitg.Done()
-					eUtils.ConfigControl(ctx, configCtx, dc, configDriver)
+					config.ConfigControl(ctx, configCtx, dc, configDriver)
 				}(driverConfig)
 			}
 		}
@@ -799,7 +808,7 @@ skipDiff:
 	close(configCtx.ResultChannel)
 	if *diffPtr { //Diff if needed
 		waitg.Add(1)
-		go func(cctx *eUtils.ConfigContext) {
+		go func(cctx *config.ConfigContext) {
 			defer waitg.Done()
 			retry := 0
 			for {

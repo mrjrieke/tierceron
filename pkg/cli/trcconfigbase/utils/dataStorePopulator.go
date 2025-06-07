@@ -77,6 +77,10 @@ func (cds *ConfigDataStore) Init(config *core.CoreConfig,
 		pathParts := strings.Split(path, "/")
 		foundWantedService := false
 		for i := 0; i < len(servicesWanted); i++ {
+			if strings.HasSuffix(path, servicesWanted[i]) {
+				foundWantedService = true
+				break
+			}
 			splitService := strings.Split(servicesWanted[i], ".")
 			if len(pathParts) >= 2 && (pathParts[2] == servicesWanted[i] || splitService[0] == pathParts[2] || (len(pathParts) >= 4 && pathParts[3] == servicesWanted[i])) {
 				foundWantedService = true
@@ -89,6 +93,10 @@ func (cds *ConfigDataStore) Init(config *core.CoreConfig,
 
 		secrets, err := mod.ReadData(path)
 		if err != nil {
+			if config.TokenCache != nil {
+				mod.EmptyCache()
+				config.TokenCache.Clear()
+			}
 			return err
 		}
 
@@ -147,6 +155,7 @@ func (cds *ConfigDataStore) Init(config *core.CoreConfig,
 					if secretBucket, ok = secretBuckets[bucket].(map[string]interface{}); !ok {
 						secretBucket, err = mod.ReadData(bucket)
 						if err != nil {
+							eUtils.LogInfo(config, fmt.Sprintf("Failure to read from bucket. %v\n", err))
 							noValueKeys = append(noValueKeys, k)
 						} else {
 							secretBuckets[bucket] = secretBucket
@@ -352,7 +361,12 @@ func (cds *ConfigDataStore) GetValue(service string, keyPath []string, key strin
 								if okResultValue {
 									return resultValue, nil
 								} else {
-									return "", errors.New("value not found in store")
+									resultValuePtr, okResultValuePtr := configValue.(*string)
+									if okResultValuePtr {
+										return *resultValuePtr, nil
+									} else {
+										return "", errors.New("value not found in store")
+									}
 								}
 							}
 						}
@@ -375,7 +389,7 @@ func (cds *ConfigDataStore) GetConfigValues(service string, config string) (map[
 	return nil, false
 }
 
-// GetConfigValue gets an invididual configuration value for a service from the data store.
+// GetConfigValue gets an individual configuration value for a service from the data store.
 func (cds *ConfigDataStore) GetConfigValue(service string, config string, key string) (string, bool) {
 	key = strings.Replace(key, ".", "_", -1)
 	if serviceValues, okServiceValues := cds.dataMap[service].(map[string]interface{}); okServiceValues {
@@ -404,7 +418,10 @@ func GetPathsFromProject(config *core.CoreConfig, mod *helperkv.Modifier, projec
 	var err error
 
 	if mod.SecretDictionary == nil {
+		envCurrent := mod.Env
+		mod.Env = mod.EnvBasis
 		mod.SecretDictionary, err = mod.List("templates", config.Log)
+		mod.Env = envCurrent
 	}
 	secrets := mod.SecretDictionary
 	var innerService string
@@ -483,12 +500,19 @@ func GetPathsFromProject(config *core.CoreConfig, mod *helperkv.Modifier, projec
 					}
 
 				} else {
-					mod.ProjectIndex = []string{project.(string)}
-					path := "templates/" + project.(string)
-					paths, pathErr = getPaths(config, mod, path, paths, false)
-					//don't add on to paths until you're sure it's an END path
-					if pathErr != nil {
-						return nil, pathErr
+					if config.WantCerts && len(services) == 1 {
+						for _, service := range services {
+							mod.ProjectIndex = []string{project.(string)}
+							paths = []string{"templates/" + project.(string) + service}
+						}
+					} else {
+						mod.ProjectIndex = []string{project.(string)}
+						path := "templates/" + project.(string)
+						paths, pathErr = getPaths(config, mod, path, paths, false)
+						//don't add on to paths until you're sure it's an END path
+						if pathErr != nil {
+							return nil, pathErr
+						}
 					}
 				}
 			}
@@ -508,7 +532,10 @@ func GetPathsFromProject(config *core.CoreConfig, mod *helperkv.Modifier, projec
 }
 
 func verifyTemplatePath(mod *helperkv.Modifier, logger *log.Logger) error {
+	envCurrent := mod.Env
+	mod.Env = mod.EnvBasis
 	secrets, err := mod.List(mod.TemplatePath, logger)
+	mod.Env = envCurrent
 	if err != nil {
 		return err
 	} else if secrets != nil {
@@ -529,9 +556,12 @@ func getPaths(config *core.CoreConfig, mod *helperkv.Modifier, pathName string, 
 		//add paths
 		slicey := secrets.Data["keys"].([]interface{})
 		if len(slicey) == 1 && slicey[0].(string) == "template-file" {
-			pathList = append(pathList, pathName)
 			if isDir {
+				pathList = append(pathList, pathName)
 				pathList = append(pathList, strings.TrimRight(pathName, "/"))
+			} else {
+				pathList = append(pathList, strings.TrimRight(pathName, "/"))
+
 			}
 		} else {
 			dirMap := map[string]bool{}

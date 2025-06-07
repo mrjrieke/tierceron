@@ -2,19 +2,22 @@ package data
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"math"
 	"sort"
 	"strconv"
 
+	tccore "github.com/trimble-oss/tierceron-core/v2/core"
 	"github.com/trimble-oss/tierceron/atrium/buildopts/argosyopts"
-	flowcore "github.com/trimble-oss/tierceron/atrium/trcflow/core"
+	"github.com/trimble-oss/tierceron/pkg/core/cache"
+	"github.com/trimble-oss/tierceron/pkg/utils/config"
 
 	"github.com/trimble-oss/tierceron/pkg/core"
 	eUtils "github.com/trimble-oss/tierceron/pkg/utils"
 	helperkv "github.com/trimble-oss/tierceron/pkg/vaulthelper/kv"
 
-	"github.com/trimble-oss/tierceron-nute/mashupsdk"
+	"github.com/trimble-oss/tierceron-nute-core/mashupsdk"
 )
 
 var maxTime int64
@@ -24,7 +27,7 @@ var count int
 
 // Collects time data from DataFlowStatistics layer and adds data to DataFlow object
 // Returns updated DetailedElements array and an array of time data from DataFlowStatistics
-func createDetailedElements(detailedElements []*mashupsdk.MashupDetailedElement, node *flowcore.TTDINode, testTimes []float64, depth int) ([]*mashupsdk.MashupDetailedElement, []float64) {
+func createDetailedElements(detailedElements []*mashupsdk.MashupDetailedElement, node *tccore.TTDINode, testTimes []float64, depth int) ([]*mashupsdk.MashupDetailedElement, []float64) {
 	for _, child_node := range node.ChildNodes {
 		if child_node.MashupDetailedElement.Genre == "DataFlowStatistic" {
 			node.MashupDetailedElement.Genre = "DataFlow"
@@ -38,6 +41,7 @@ func createDetailedElements(detailedElements []*mashupsdk.MashupDetailedElement,
 				err := json.Unmarshal([]byte(stat.Data), &decodedstat)
 				if err != nil {
 					log.Println("Error in decoding data in buildDataFlowStatistics")
+					continue
 				}
 				decodedStatData := decodedstat.(map[string]interface{})
 				timeNanoSeconds := int64(decodedStatData["TimeSplit"].(float64))
@@ -83,29 +87,29 @@ func createDetailedElements(detailedElements []*mashupsdk.MashupDetailedElement,
 
 // Returns an array of mashup detailed elements populated with each Tenant's data and Childnodes
 func GetData(insecure *bool, logger *log.Logger, envPtr *string) []*mashupsdk.MashupDetailedElement {
-	driverConfig := &eUtils.DriverConfig{
-		CoreConfig: core.CoreConfig{
+	addressPtr := new(string)
+	driverConfig := &config.DriverConfig{
+		CoreConfig: &core.CoreConfig{
 			ExitOnFailure: true,
+			TokenCache:    cache.NewTokenCacheEmpty(addressPtr),
+			Insecure:      *insecure,
 			Log:           logger,
 		},
-		Insecure: *insecure,
 	}
-	secretID := ""
-	appRoleID := ""
-	address := ""
-	token := ""
+	tokenPtr := new(string)
+	currentRoleEntityPtr := new(string)
 	empty := ""
 
-	autoErr := eUtils.AutoAuth(driverConfig, &secretID, &appRoleID, &token, &empty, envPtr, &address, nil, "", false)
-	eUtils.CheckError(&driverConfig.CoreConfig, autoErr, true)
+	autoErr := eUtils.AutoAuth(driverConfig, &empty, &tokenPtr, envPtr, nil, currentRoleEntityPtr, false)
+	eUtils.CheckError(driverConfig.CoreConfig, autoErr, true)
 
-	mod, modErr := helperkv.NewModifier(*insecure, token, address, *envPtr, nil, true, logger)
+	mod, modErr := helperkv.NewModifier(*insecure, driverConfig.CoreConfig.TokenCache.GetToken(fmt.Sprintf("config_token_%s_protected", driverConfig.CoreConfig.EnvBasis)), addressPtr, *envPtr, nil, true, logger)
 	mod.Direct = true
 	mod.Env = *envPtr
-	eUtils.CheckError(&driverConfig.CoreConfig, modErr, true)
+	eUtils.CheckError(driverConfig.CoreConfig, modErr, true)
 	logger.Printf("Building fleet.\n")
 	ArgosyFleet, argosyErr := argosyopts.BuildFleet(mod, logger)
-	eUtils.CheckError(&driverConfig.CoreConfig, argosyErr, true)
+	eUtils.CheckError(driverConfig.CoreConfig, argosyErr, true)
 	logger.Printf("Fleet built.\n")
 
 	DetailedElements := []*mashupsdk.MashupDetailedElement{}

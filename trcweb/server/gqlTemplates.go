@@ -17,7 +17,7 @@ import (
 // Secret values will only be populated for environments with values for that secret group
 // All template keys that reference public values will be populated with those values
 func (s *Server) getTemplateData() (*pb.ValuesRes, error) {
-	mod, err := helperkv.NewModifier(false, s.VaultToken, s.VaultAddr, "nonprod", nil, true, s.Log)
+	mod, err := helperkv.NewModifier(false, s.VaultTokenPtr, s.VaultAddrPtr, "nonprod", nil, true, s.Log)
 	config := &core.CoreConfig{
 		ExitOnFailure: false,
 		Log:           s.Log,
@@ -124,7 +124,7 @@ func (s *Server) getTemplateData() (*pb.ValuesRes, error) {
 							continue
 
 						} else {
-							// Construct a string -> bool map to track accessable environments
+							// Construct a string -> bool map to track accessible environments
 
 							if vDataKeys, ok := vSecret.Data["keys"]; ok {
 								if vKeys, okKeys := vDataKeys.([]interface{}); okKeys {
@@ -163,7 +163,7 @@ func (s *Server) getTemplateData() (*pb.ValuesRes, error) {
 									} else if pathBlocks[0] == "values" { // Real value, fetch and populate
 										if key, ok := val[1].(string); ok {
 											value, err := mod.ReadValue(fullPath, key)
-											if err == nil && value != "" {
+											if err == nil && !eUtils.RefEquals(&value, "") {
 												secrets = append(secrets, &pb.ValuesRes_Env_Project_Service_File_Value{Key: k, Value: value, Source: "value"})
 											}
 										} else {

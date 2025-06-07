@@ -11,11 +11,11 @@ import (
 	"github.com/g3n/engine/graphic"
 	"github.com/g3n/engine/material"
 	"github.com/g3n/engine/math32"
+	"github.com/trimble-oss/tierceron-nute-core/mashupsdk"
 	"github.com/trimble-oss/tierceron-nute/g3nd/g3nmash"
 	"github.com/trimble-oss/tierceron-nute/g3nd/g3nworld"
 	g3ndpalette "github.com/trimble-oss/tierceron-nute/g3nd/palette"
 	"github.com/trimble-oss/tierceron-nute/g3nd/worldg3n/g3nrender"
-	"github.com/trimble-oss/tierceron-nute/mashupsdk"
 )
 
 type ClickedG3nDetailElement struct {
@@ -246,7 +246,7 @@ func (er *ElementRenderer) InitRenderLoop(worldApp *g3nworld.WorldApp) bool {
 		for k, v := range er.LocationCache {
 			copyCache[k] = v
 		}
-		for key, _ := range copyCache {
+		for key := range copyCache {
 			element := worldApp.ConcreteElements[key]
 			if element.GetDetailedElement().Genre != "Solid" && element.GetDetailedElement().Name != "TenantDataBase" {
 				er.initLocnCache(worldApp, element)
@@ -314,7 +314,7 @@ func (er *ElementRenderer) ctrlRemove(worldApp *g3nworld.WorldApp) {
 		for amount <= (len(er.ctrlElements) - 1) {
 			el := er.ctrlElements[amount]
 			a := !er.isChildElement(worldApp, el)
-			b := el.GetParentElementIds() != nil
+			b := len(el.GetParentElementIds()) != 0
 			d := len(clickedElement.GetParentElementIds()) != 0
 			c := false
 			if d {

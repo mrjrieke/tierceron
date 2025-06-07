@@ -1,25 +1,33 @@
 package capauth
 
+import (
+	"fmt"
+
+	"github.com/trimble-oss/tierceron/pkg/core/cache"
+	eUtils "github.com/trimble-oss/tierceron/pkg/utils"
+)
+
 type TrcShConfig struct {
-	Env          string
-	EnvContext   string // Current env context...
-	VaultAddress *string
-	CToken       *string
-	ConfigRole   *string
-	PubRole      *string
-	KubeConfig   *string
+	IsShellRunner bool
+	Env           string
+	EnvContext    string // Current env context...
+	TokenCache    *cache.TokenCache
+	KubeConfigPtr *string
 }
 
 func (trcshConfig *TrcShConfig) IsValid(agentConfigs *AgentConfigs) bool {
 	if agentConfigs == nil {
 		// Driver needs a lot more permissions to run...
-		return trcshConfig.ConfigRole != nil && trcshConfig.PubRole != nil &&
-			trcshConfig.VaultAddress != nil && trcshConfig.KubeConfig != nil &&
-			len(*trcshConfig.ConfigRole) > 0 && len(*trcshConfig.PubRole) > 0 &&
-			len(*trcshConfig.VaultAddress) > 0 && len(*trcshConfig.KubeConfig) > 0
+		return eUtils.RefSliceLength(trcshConfig.TokenCache.GetRole("bamboo")) > 0 &&
+			eUtils.RefSliceLength(trcshConfig.TokenCache.GetRole("pub")) > 0 &&
+			eUtils.RefLength(trcshConfig.KubeConfigPtr) > 0 &&
+			eUtils.RefLength(trcshConfig.TokenCache.VaultAddressPtr) > 0
 	} else {
-		// Agent
-		return trcshConfig.ConfigRole != nil && trcshConfig.VaultAddress != nil &&
-			len(*trcshConfig.ConfigRole) > 0 && len(*trcshConfig.VaultAddress) > 0
+		if trcshConfig.IsShellRunner && trcshConfig.TokenCache != nil && trcshConfig.TokenCache.GetToken(fmt.Sprintf("config_token_%s_unrestricted", trcshConfig.Env)) != nil {
+			return true
+		} else {
+			// Agent
+			return eUtils.RefSliceLength(trcshConfig.TokenCache.GetRole("bamboo")) > 0 && eUtils.RefLength(trcshConfig.TokenCache.VaultAddressPtr) > 0
+		}
 	}
 }
